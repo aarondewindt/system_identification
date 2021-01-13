@@ -87,6 +87,3 @@ if (printfigs == 1)
     savefname = strcat(figpath, fpath);
     print(plotID, '-dpng', '-r300', savefname);
 end
-
-
-
