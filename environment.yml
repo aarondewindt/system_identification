@@ -1,0 +1,19 @@
+name: system_identification
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.8
+  - pip
+  - numpy
+  - scipy
+  - jupyterlab
+  - matplotlib
+  - numba
+  - sympy
+  - xarray
+  - netCDF4
+  - ipympl
+  - pip:
+      - -e "git+https://github.com/aarondewindt/cw.git@master#egg=cw"
+      - -e .

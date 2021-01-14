@@ -1,5 +1,7 @@
 *.idea
 
+# External libraries
+src/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
