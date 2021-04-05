@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import xarray as xr
 import numpy as np
 
@@ -23,5 +24,18 @@ def load_assignment_data(data_dir_path: Path,
     })
 
     return data
+
+
+def load_net_example_ff(data_dir_path: Path):
+    raw_data = loadmat(str(data_dir_path / "NetExampleFF.mat"), chars_as_strings=True, struct_as_record=True)
+    return {
+        "input_weights": raw_data['netFF']['IW'][0][0],
+        "output_weights": raw_data['netFF']['LW'][0][0],
+        "bias_weights": [
+            raw_data['netFF']['b'][0][0][0][0],
+            raw_data['netFF']['b'][0][0][1][0],
+        ],
+        "range": raw_data['netFF']['range'][0][0],
+    }
 
 

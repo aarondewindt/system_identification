@@ -1,0 +1,18 @@
+version: '3'
+
+services:
+  system_identification:
+    build:
+      context: .
+      dockerfile: .Dockerfile
+      args:
+        NB_UID: ${UID}
+        NB_GID: ${GID}
+    ports:
+      - 8888:8888
+    environment:
+      - GRANT_SUDO=1
+      - JUPYTER_ENABLE_LAB=1
+      - RESTARTABLE=1
+    volumes:
+      - ./:/home/jovyan/system_identification

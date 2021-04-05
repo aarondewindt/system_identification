@@ -1,0 +1,454 @@
+import numpy as np
+import xarray as xr
+import sympy as sp
+
+from typing import Callable, Optional, Sequence, Union
+from collections import deque
+from textwrap import indent
+from tqdm.auto import tqdm, trange
+from scipy.signal import cont2discrete
+
+
+class IteratedExtendedKalmanFilter:
+    """
+    Iterated Extended Kalman Filter.
+
+    :param t: Sympy symbol representing time. By default this will be 't'.
+    :param x: Sequence of sympy symbols representing the state vector.
+    :param u: Sequence of sympy symbols representing the input vector.
+    :param z: Sequence of sympy symbols or strings with the name of the measurement vector.
+    :param f: Sympy matrix with the state dynamics equations.
+    :param fx: Optional sympy matrix with the state dynamics jacobian.
+    :param h: Sympy matrix with the observation equations.
+    :param hx: Optional sympy matrix with the observation jacobian.
+    :param g: Sympy matrix with the system input noise matrix.
+    :param max_iterations: Maximum number of iteration per time step.
+    :param eps: Maximum iteration error.
+    """
+    def __init__(self, *,
+                 t: sp.Symbol=None,
+                 x: Sequence[sp.Symbol],
+                 u: Optional[Sequence[sp.Symbol]]=None,
+                 z: Sequence[Union[str, sp.Symbol]],
+                 f: sp.Matrix,
+                 fx: Optional[sp.Matrix]=None,
+                 h: sp.Matrix,
+                 hx: Optional[sp.Matrix] = None,
+                 g: sp.Matrix,
+                 max_iterations: Optional[int]=100,
+                 eps: Optional[float]=1e-10):
+        # Check inputs
+        assert max_iterations >= 1
+
+        # Store input
+        self.t = t or sp.symbols("t")
+        self.x = tuple(x)
+        self.u = tuple(u or ())
+        self.z = tuple(z)
+        self.txu = (self.t, *self.x, *self.u)
+        self.f = f
+        self.h = h
+        self.g = g
+        self.max_iterations = max_iterations
+        self.eps = eps
+
+        self.t_name = self.t.name
+        self.x_names = [x.name for x in self.x]
+        self.u_names = [u.name for u in self.u]
+        self.z_names = [z.name if isinstance(z, sp.Symbol) else z for z in self.z]
+
+        # Compute jacobians if necessary.
+        self.fx = fx if fx else f.jacobian(x)
+        self.hx = hx if hx else h.jacobian(x)
+
+        # Create callables from the functions
+        self.f_func: Callable = sp.lambdify(self.txu, f)
+        self.h_func: Callable = sp.lambdify(self.txu, h)
+        self.g_func: Callable = sp.lambdify(self.txu, g)
+        self.fx_func: Callable = sp.lambdify(self.txu, self.fx)
+        self.hx_func: Callable = sp.lambdify(self.txu, self.hx)
+
+    def __repr__(self):
+        return f"IteratedExtendedKalmanFilter:\n" + indent(
+            f"x:\n{indent(sp.pretty(self.x, wrap_line=False), '  ')}\n"
+            f"z:\n{indent(sp.pretty(self.z, wrap_line=False), '  ')}\n"
+            f"u:\n{indent(sp.pretty(self.u, wrap_line=False), '  ')}\n"
+            f"f:\n{indent(sp.pretty(self.f, wrap_line=False), '  ')}\n"
+            f"g:\n{indent(sp.pretty(self.g, wrap_line=False), '  ')}\n"
+            f"h:\n{indent(sp.pretty(self.h, wrap_line=False), '  ')}\n"
+            f"fx:\n{indent(sp.pretty(self.fx, wrap_line=False), '  ')}\n"
+            f"hx:\n{indent(sp.pretty(self.hx, wrap_line=False), '  ')}\n", '  ')
+
+    def _repr_markdown_(self):
+        """
+        Markdown representation of the filter for display in Jupyter.
+        """
+        def to_latex(name, equation):
+            return f"$${name} = {sp.latex(equation)}$$"
+
+        equations = [("x", self.x),
+                     ("z", self.z),
+                     ("u", self.u),
+                     ("f(\dots)", self.f),
+                     ("g(\dots)", self.g),
+                     ("h(\dots)", self.h)]
+
+        equations.extend([('F_x(\dots)', self.fx),
+                          ('H_x(\dots)', self.hx)])
+
+        return "  \n".join(to_latex(name, equation) for name, equation in equations)
+
+    def sim(self,
+            *,
+            x_0: Sequence[float],
+            u: xr.Dataset,
+            system_noise: Sequence[float],
+            system_bias: Sequence[float],
+            measurement_noise: Sequence[float],
+            measurement_bias: Sequence[float]) -> xr.Dataset:
+        """
+        Run a simulation of the system in order to generate test data.
+
+        :param x_0: Initial state.
+        :param u: Dataset with the input signals.
+        :param system_noise: System noise variance.
+        :param system_bias: System bias.
+        :param measurement_noise: Measurement noise variance.
+        :param measurement_bias: Measurement bias.
+        :return: Dataset with the simulated state and measurement signals.
+        """
+
+        # Check inputs.
+        assert len(x_0) == len(self.x), "Length of x_0 must be equal to the number of system states."
+        assert set(u.data_vars) >= set(self.u_names), "All system inputs must be given."
+        assert len(system_noise) == len(self.x), \
+            "Length of system_noise must be equal to the number of system states."
+        assert len(system_bias) == len(self.x), "Length of system_bias must be equal to the number of system states."
+        assert len(measurement_noise) == len(self.z), \
+            "Length of measurement_noise must be equal to the number of measurements."
+        assert len(measurement_bias) == len(self.z), \
+            "Length of measurement_bias must be equal to the number of measurements."
+
+        n_x = len(self.x)
+        n_z = len(self.z)
+        n_u = len(self.u)
+
+        # Make sure the noise variances and biases are in flattened ndarrays.
+        system_noise = np.asarray(system_noise).flatten()
+        system_bias = np.asarray(system_bias).flatten()
+        measurement_noise = np.asarray(system_noise).flatten()
+        measurement_bias = np.asarray(system_bias).flatten()
+
+        # Get time vector.
+        time_vector = u.t.values
+
+        n_t = len(time_vector)
+
+        # Input signals.
+        u_log = np.vstack([u[u_name] for u_name in self.u_names]).T if n_u else [[]] * len(time_vector)
+
+        # Generator yielding the input signal at the end of each iteration.
+        u_f_iter = iter(u_log)
+        next(u_f_iter)
+
+        # Create iterator that will give the final time of each iteration.
+        t_f_iter = iter(time_vector)
+        next(t_f_iter)
+
+        # Create matrix in which to store results and set initial state
+        x_log = np.empty((n_t, n_x))
+        x_log.fill(np.nan)
+        x_log[0, :] = x_0
+
+        # Create measurement log
+        z_log = np.empty((n_t, n_x))
+        z_log.fill(np.nan)
+
+        z_log[0, :] = self.h_func(0.0, *x_0, *u_log[0]).flatten() \
+                      + measurement_noise * np.random.normal(size=(n_x,)) + measurement_bias
+
+        # Iterate though each point in time and integrate using an euler integrator.
+        for i, (t_i, t_f, x_i, u_i, u_f) in enumerate(zip(time_vector, t_f_iter, x_log, u_log, u_f_iter)):
+            dt = t_f - t_i
+
+            f = self.f_func(t_i, *x_i, *u_i).flatten()
+            g = self.g_func(t_i, *x_i, *u_i)
+
+            # Calculate derivative
+            dx = f + (g @ (system_noise * np.random.normal(size=(n_x,)))).flatten() + system_bias
+            x_f = x_i + dx * dt
+
+            # Store result
+            x_log[i+1, :] = x_f
+            z_log[i+1, :] = self.h_func(t_f, *x_f, *u_f) + measurement_noise * np.random.normal(size=(n_x,)) + measurement_bias
+
+        return u.merge(xr.Dataset(
+            data_vars={
+                **{self.x_names[x_idx]: (('t',), x_log[:, x_idx]) for x_idx in range(n_x)},
+                **{self.z_names[z_idx]: (('t',), z_log[:, z_idx]) for z_idx in range(n_z)},
+            }
+        ))
+
+    def filter(self,
+               data: xr.Dataset,
+               x_0: Union[np.ndarray, Sequence[float]],
+               p_0: Union[np.ndarray, Sequence[Sequence[float]]],
+               q: Union[np.ndarray, Sequence[Sequence[float]]],
+               r: Union[np.ndarray, Sequence[Sequence[float]]],
+               verbose=False):
+        """
+        Filter the signals in the dataset.
+
+        :param data: Dataset containing data to be filtered.
+        :param x_0: Initial state guess
+        :param p_0: Initial covariance matrix guess.
+        :param q: System noise covariance matrix.
+        :param r: Measurement noise covariance matrix.
+        :param verbose: True to print debug messages.
+        :return:
+        """
+        # Set of variables in the dataset.
+        cols_set = set(data.data_vars)
+
+        n_x = len(self.x)
+        n_u = len(self.u)
+        n_z = len(self.z)
+
+        # Make sure p_0, Q and R are ndarray
+        p_0 = np.asarray(p_0)
+        q = np.asarray(q)
+        r = np.asarray(r)
+
+        # Number of columns in the g matrix.
+        m_g = self.g.shape[1]
+
+        assert set(self.z_names) <= cols_set, f"Missing measurements in the data frame.\n{', '.join(set(self.z_names) - cols_set)}"
+        assert len(x_0) == n_x, "x_0 must have the same size as the number of states."
+        assert p_0.shape == (n_x, n_x), "p_0 must be a square matrix whose sides must have the same " \
+                                        "length as the number of states."
+        assert q.shape == (m_g, m_g), "The system noise covariance matrix 'Q' needs to be an nxn matrix, where n is" \
+                                      "n the width of the G matrix."
+        assert r.shape == (n_z, n_z), "The measurement noise covariance matrix 'R' needs to be an nxn matrix, where " \
+                                      "n is the number of measurements."
+
+        # Make sure x_0 is a flattened ndarray.
+        x_0 = np.asarray(x_0).flatten()
+
+        # Get time vector.
+        time_vector = data.t.values
+
+        # Get matrices with measurements and input values
+        u_log = np.vstack([data[u_name].values for u_name in self.u_names]).T if len(self.u) else [[]] * len(time_vector)
+        z_log = np.vstack([data[z_name].values for z_name in self.z_names]).T
+
+        # Create iterator that will give the final time of each iteration.
+        t_f_iter = iter(time_vector)
+        next(t_f_iter)
+
+        # Create logs
+        x_k1k1_log = deque((x_0,), maxlen=len(time_vector)+2)
+        p_k1k1_log = deque((p_0,), maxlen=len(time_vector)+2)
+        x_kk1_log = deque((x_0,), maxlen=len(time_vector)+2)
+        p_kk1_log = deque((p_0,), maxlen=len(time_vector)+2)
+        phi_log = deque((p_0,), maxlen=len(time_vector) + 2)
+        gamma_log = deque((p_0,), maxlen=len(time_vector)+2)
+        iter_count = deque((0,), maxlen=len(time_vector)+2)
+
+        # Constant values used throughout the code
+        eye_nx = np.eye(n_x)
+        c_null = np.zeros((1, n_x))
+        d_null = np.zeros((1, n_u))
+
+        for k, (t_i, t_f, u_k, z_k) in tqdm(enumerate(zip(time_vector, t_f_iter, u_log, z_log)),
+                                            total=len(time_vector)-1,
+                                            disable=not verbose,
+                                            postfix="Filtering"):
+            dt = t_f - t_i
+            x_kk = x_k1k1_log[k]
+            p_kk = p_k1k1_log[k]
+
+            # State prediction
+            x_kk1 = rk4(self.f_func, x_kk, u_k, t_i, t_f)
+
+            # These values are set in the loop and used afterwards.
+            # In order to ensure these variables are defined initialize
+            # as nan.
+            eta_1i = x_kk1  # Initial state prediction
+            eta_i = np.nan  # Final state prediction
+            k_gain = np.nan  # Kalman gain
+            hx = np.nan  # Observation matrix jacobian
+            p_kk1 = np.nan  # Covariance matrix prediction
+            phi = np.nan  # Discreet system transition matrix
+            gamma = np.nan  # Discreet input matrix
+            for i in range(self.max_iterations):
+                # Measurement prediction
+                z_p = self.h_func(t_i, *eta_1i, *u_k).flatten()
+
+                # Calculate Phi and Gamma
+                phi, gamma, _, __, ___ = cont2discrete(
+                    (self.fx_func(t_i, *eta_1i, *u_k),
+                     self.g_func(t_i, *eta_1i, *u_k),
+                     c_null,
+                     d_null,
+                     ),
+                    dt
+                )
+
+                # Covariance matrix prediction
+                p_kk1 = phi @ p_kk @ phi.T + gamma @ q @ gamma.T
+
+                # Calculate Kalman gain
+                hx = self.hx_func(t_i, *eta_1i, *u_k)
+
+                # Check observability.
+                # o = obsv(fx, hx)
+                # if np.linalg.matrix_rank(o) < n_x:
+                #     print("Unobservable.")
+
+                # Calculate Kalman gain.
+                # Using pseudo inverse function since there might be non-invertible matrices.
+                k_gain = (p_kk1 @ hx.T) @ np.linalg.pinv(hx @ p_kk1 @ hx.T + r)
+
+                # Calculate optimal state
+                eta_i = x_kk1 + k_gain @ (z_k - z_p - (hx @ (x_kk1 - eta_1i)))
+
+                # Check if the error is small enough
+                if (np.linalg.norm(eta_i - eta_1i) / np.linalg.norm(eta_1i)) <= self.eps:
+                    # Break the loop if so.
+                    x_k1k1 = eta_i.flatten()
+                    iter_count.append(i+1)
+                    break
+                else:
+                    # Set eta_1i and loop again.
+                    eta_1i = eta_i.flatten()
+            else:
+                # We have run the maximum number of iterations. Set x_k1k1 with the current
+                # value in eta_i
+                x_k1k1 = eta_i
+                iter_count.append(i+1)
+
+            # p_k1k1 correction using numerically stable form of p_k1k1 = (eye(n) - K*hx) * p_kk_1
+            D = (eye_nx - k_gain @ hx)
+            p_k1k1 = D @ p_kk1 @ D.T + k_gain @ r @ k_gain.T
+
+            # Store results
+            x_k1k1_log.append(x_k1k1)
+            p_k1k1_log.append(p_k1k1)
+            x_kk1_log.append(x_kk1)
+            p_kk1_log.append(p_kk1)
+            phi_log.append(phi)
+            gamma_log.append(gamma)
+
+        # Add results to the dataset and return it
+        data["p_k1k1"] = (("t", "dim_0", "dim_1"), np.array(p_k1k1_log))
+        data["x_k1k1"] = (("t", "x_idx"), np.array(x_k1k1_log))
+        data["p_kk1"] = (("t", "dim_0", "dim_1"), np.array(p_kk1_log))
+        data["x_kk1"] = (("t", "x_idx"), np.array(x_kk1_log))
+        data["phi"] = (("t", "dim_0", "dim_1"), np.array(phi_log))
+        data["gamma"] = (("t", "dim_0", "dim_1"), np.array(gamma_log))
+        data["iekf_i_count"] = (("t",), np.array(iter_count))
+
+        for x_idx, x_name in enumerate(self.x_names):
+            data[f"{x_name}_filtered"] = data.x_k1k1.isel(x_idx=x_idx)
+            data[f"{x_name}_filtered_std"] = data.p_k1k1.isel(dim_0=x_idx, dim_1=x_idx)
+
+        return data
+
+    def smooth(self,
+               data: xr.Dataset,
+               x_0: Optional[Union[np.ndarray, Sequence[float]]]=None,
+               p_0: Optional[Union[np.ndarray, Sequence[Sequence[float]]]]=None,
+               q: Optional[Union[np.ndarray, Sequence[Sequence[float]]]]=None,
+               r: Optional[Union[np.ndarray, Sequence[Sequence[float]]]]=None,
+               verbose=False):
+        """
+        Smooth the data using an extended RTS smoother.
+
+        :param data: Data to smooth. It does not neccesaraly need to contain the
+                     results for the forward IEKF results.
+        :param x_0: Initial state. Only required if the forward pass needs to be run.
+        :param p_0: Initial covariance matrix. Only required if the forward pass needs to be run.
+        :param q: System noise matrix. Only required if the forward pass needs to be run.
+        :param r: Input noise matrix. Only required if the forward pass needs to be run.
+        :param verbose: True to show the progressbar.
+        :return:
+        """
+
+        # Check if we need to run the filter and run it if so.
+        if not ({"p_k1k1", "x_k1k1", "x_kk1", "p_kk1", "phi"} <= set(data.data_vars)):
+            # Run the IKEF for the forward pass.
+            data = self.filter(data, x_0, p_0, q, r, verbose)
+
+        # Initialize smoothed state and covariance matrix logs.
+        xs_log = deque((data.x_k1k1.isel(t=-1).values,))
+        ps_log = deque((data.p_k1k1.isel(t=-1).values,))
+
+        # Loop k from N-1 to 0, where N is the number of measurement samples.
+        for k in trange(len(data.t) - 1, 0, -1, disable=not verbose, postfix="Smoothing"):
+            # Kalman filter estimate at k
+            p_kk = data.p_k1k1.isel(t=k-1).values
+            x_kk = data.x_k1k1.isel(t=k-1).values
+
+            # State and covariance matrix prediction.
+            x_kk1 = data.x_kk1.isel(t=k).values
+            p_kk1 = data.p_kk1.isel(t=k).values
+
+            # Discreet state transition matrix at k
+            phi_k = data.phi.isel(t=k).values
+
+            # Smoothed values from the previous iteration
+            xs_k1 = xs_log[-1]
+            ps_k1 = ps_log[-1]
+
+            # RTS Smoother gain
+            c_k = p_kk @ phi_k.T @ np.linalg.pinv(p_kk1)
+
+            # Smoothed state and covariance matrix estimate
+            xs_k = x_kk + c_k @ (xs_k1 - x_kk1)
+            ps_k = p_kk + c_k @ (ps_k1 - p_kk1) @ c_k.T
+
+            xs_log.append(xs_k)
+            ps_log.append(ps_k)
+
+        data["xs"] = (("t", "x_idx"), np.array(tuple(reversed(xs_log))))
+        data["ps"] = (("t", "dim_0", "dim_1"), np.array(tuple(reversed(ps_log))))
+
+        for x_idx, x_name in enumerate(self.x_names):
+            data[f"{x_name}_smoothed"] = data.xs.isel(x_idx=x_idx)
+            data[f"{x_name}_smoothed_std"] = data.ps.isel(dim_0=x_idx, dim_1=x_idx)
+        return data
+
+
+def rk4(f: Callable,
+        x_0: Union[Sequence[float], np.ndarray],
+        u: Union[Sequence[float], np.ndarray],
+        t_i: float,
+        t_f: float,
+        n: int=1):
+    """
+    Fourth order Runge-Kutta integration.
+
+    :param f: Callable returning the state derivatives. All parameters are scalars, the
+              first parameter should be the time, followed by the current states and
+              then the inputs.
+    :param x_0: Sequence of initial state.
+    :param u: Input vector
+    :param t_i: Initial time
+    :param t_f: Final time
+    :param n: Number of iterations.
+    :return: Final state vector.
+    """
+    w = np.asarray(x_0, dtype=np.float64).flatten()
+    t = t_i
+    h = (t_f - t_i) / n
+
+    for j in range(1, n+1):
+        k1 = h * f(t, *w, *u).flatten()
+        k2 = h * f(t + h/2., *(w+k1/2.), *u).flatten()
+        k3 = h * f(t + h/2., *(w+k2/2.), *u).flatten()
+        k4 = h * f(t + h, *(w+k3), *u).flatten()
+
+        w += (k1 + 2. * k2 + 2. * k3 + k4) / 6.0
+        t = t_i + j * h
+
+    return w

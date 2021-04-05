@@ -8,26 +8,23 @@ with open(ver_path) as ver_file:
     exec(ver_file.read(), ns)
     version = ns['version']
 
+with open('requirements.txt') as f:
+    required = f.read().splitlines()
+
 setup(
     name='system_identification',
     version=ns['version'],
-    description='System identification assignment',
-    author='Aaron M. de Windt',
-    author_email='',
-
-    install_requires=['numpy',
-                      'scipy',
-                      "xarray",
-                      "matplotlib"
-                      ],
-    packages=find_packages('.', exclude=["test"]),
+    description=".",
+    author='Aaron de Windt',
+    author_email='aaron.dewindt@gmail.com',
+    url='https://github.com/aarondewindt/system_identification',
+    install_requires=required,
+    packages=find_packages('.'),
     package_data={},
     classifiers=[
         'Programming Language :: Python :: 3 :: Only',
         'Development Status :: 2 - Pre-Alpha'],
     entry_points={
-        'console_scripts': [
-            'si = system_identification.__main__:main'
-        ]
+        'console_scripts': []
     }
 )
