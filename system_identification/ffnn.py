@@ -1,11 +1,12 @@
 from typing import Tuple, Union, Sequence
 from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
+from time import time
+import pickle
 
 from tqdm.auto import trange
 import numpy as np
-
-from numba import jit
 
 
 @dataclass
@@ -22,8 +23,12 @@ class FeedForwardNeuralNetwork:
                  output_weights: np.ndarray,
                  bias_weights: Tuple[np.ndarray, np.ndarray],
                  range: np.ndarray,
-                 training_parameters: TrainingParameters
+                 training_parameters: TrainingParameters,
+                 log_dir: Union[Path, str],
                  ):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(exist_ok=True)
+
         self.name = "feedforward"
         self.activation_functions = ("tansig", 'purelin')
         self.training_algorithm = "trainlm"
@@ -50,7 +55,8 @@ class FeedForwardNeuralNetwork:
             n_outputs: float,
             n_hidden: float,
             range: Union[np.ndarray, Sequence[float]],
-            training_parameters: TrainingParameters):
+            training_parameters: TrainingParameters,
+            log_dir: Union[Path, str]):
 
         range = np.atleast_2d(range)
         assert range.shape == (n_inputs, 2)
@@ -64,7 +70,26 @@ class FeedForwardNeuralNetwork:
             ),
             range=range,
             training_parameters=training_parameters,
+            log_dir=log_dir,
         )
+
+    def save(self):
+        # Look for available index
+        idx = 0
+        path = self.log_dir / f"{self.name}_{idx}.pickle"
+        while path.exists():
+            idx += 1
+            path = self.log_dir / f"{self.name}_{idx}.pickle"
+
+        with open(path, "wb") as f:
+            pickle.dump({
+                "input_weights": self.input_weights.tolist(),
+                "output_weights": self.output_weights.tolist(),
+                "bias_weights0": self.bias_weights[0].tolist(),
+                "bias_weights1": self.bias_weights[1].tolist(),
+                "range": self.range.tolist(),
+                "training_parameters": self.training_parameters,
+            }, f)
 
     def save_matlab(self):
         mdict = {
@@ -96,13 +121,17 @@ class FeedForwardNeuralNetwork:
     def back_propagation(self,
                          inputs: Union[np.ndarray, Sequence[float]],
                          reference_outputs: Union[np.ndarray, Sequence[float]],
-                         epochs=None):
+                         epochs=None,
+                         dt_save=60):
         epochs = epochs or self.training_parameters.epochs
 
         inputs = np.atleast_2d(inputs)
         reference_outputs = np.atleast_2d(reference_outputs)
 
         assert inputs.shape[0] == reference_outputs.shape[0]
+
+        self.save()
+        t_last_save = time()
 
         with trange(epochs) as progress_bar:
             for epoch_idx in progress_bar:
@@ -138,5 +167,9 @@ class FeedForwardNeuralNetwork:
 
                     delta_output_weights = -self.training_parameters.mu * derror_dow
                     self.output_weights += delta_output_weights
+
+                    if (time() - t_last_save) > dt_save:
+                        t_last_save = time()
+                        self.save()
 
                 progress_bar.set_postfix(msg=f"{np.sum(delta_input_weights):5.2e} {np.sum(delta_output_weights):5.2e}")
