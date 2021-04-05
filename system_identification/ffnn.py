@@ -106,14 +106,12 @@ class FeedForwardNeuralNetwork:
 
         with trange(epochs) as progress_bar:
             for epoch_idx in progress_bar:
+                derror_biasweight_0 = np.zeros((self.n_hidden, 1))
                 for input, reference_output in zip(inputs, reference_outputs):
-                    derror_biasweight_0 = np.zeros((self.n_hidden, 1))
-                    derror_biasweight_1 = np.zeros((self.n_output, 1))
-                    derror_diw = np.zeros(self.input_weights.shape)
-                    derror_dow = np.zeros(self.output_weights.shape)
 
                     input = input.reshape(input.shape[0], -1)
                     reference_output = reference_output.reshape(reference_output.shape[0], -1)
+
                     hidden_input = self.input_weights @ input + self.bias_weights[0]
                     hidden_output = np.tanh(hidden_input)
                     output = self.output_weights @ hidden_output + self.bias_weights[1]
@@ -123,11 +121,12 @@ class FeedForwardNeuralNetwork:
                     derror_biasweight_1 = -errors
                     derror_dow = -errors @ hidden_output.T
 
-                    for j, k in product(range(self.n_hidden), range(self.n_output)):
-                        derror_biasweight_0[j] = -errors[k] * self.output_weights[k, j] * (1 / np.cosh(hidden_input[j]))**2
+                    dvk_dwjk = (1 / np.cosh(hidden_input)) ** 2
 
-                    for i, j, k in product(range(self.n_inputs), range(self.n_hidden), range(self.n_output)):
-                        derror_diw[j, i] += -errors[k] * self.output_weights[k, j] * (1 / np.cosh(hidden_input[j]))**2 * input[i]
+                    for j, k in product(range(self.n_hidden), range(self.n_output)):
+                        derror_biasweight_0[j] = -errors[k] * self.output_weights[k, j] * dvk_dwjk[j]
+
+                    derror_diw = derror_biasweight_0 @ input.T
 
                     delta_bias_weights_0 = -self.training_parameters.mu * derror_biasweight_0
                     self.bias_weights[0] += delta_bias_weights_0
@@ -139,9 +138,5 @@ class FeedForwardNeuralNetwork:
 
                     delta_output_weights = -self.training_parameters.mu * derror_dow
                     self.output_weights += delta_output_weights
-
-                # print(self.input_weights, delta_input_weights)
-                # print(self.output_weights, delta_output_weights)
-                # print("")
 
                 progress_bar.set_postfix(msg=f"{np.sum(delta_input_weights):5.2e} {np.sum(delta_output_weights):5.2e}")
