@@ -5,6 +5,8 @@ from itertools import product
 from tqdm.auto import trange
 import numpy as np
 
+from numba import jit
+
 
 @dataclass
 class TrainingParameters:
@@ -105,8 +107,8 @@ class FeedForwardNeuralNetwork:
         with trange(epochs) as progress_bar:
             for epoch_idx in progress_bar:
                 for input, reference_output in zip(inputs, reference_outputs):
-                    derror_biasweight_0 = np.zeros(self.n_inputs)
-                    derror_biasweight_1 = np.zeros(self.n_output)
+                    derror_biasweight_0 = np.zeros((self.n_hidden, 1))
+                    derror_biasweight_1 = np.zeros((self.n_output, 1))
                     derror_diw = np.zeros(self.input_weights.shape)
                     derror_dow = np.zeros(self.output_weights.shape)
 
@@ -118,11 +120,8 @@ class FeedForwardNeuralNetwork:
 
                     errors = reference_output - output
 
-                    for k in range(self.n_output):
-                        derror_biasweight_1[k] = -errors[k]
-
-                    for j, k in product(range(self.n_hidden), range(self.n_output)):
-                        derror_dow[k, j] += -errors[k] * hidden_output[j]
+                    derror_biasweight_1 = -errors
+                    derror_dow = -errors @ hidden_output.T
 
                     for j, k in product(range(self.n_hidden), range(self.n_output)):
                         derror_biasweight_0[j] = -errors[k] * self.output_weights[k, j] * (1 / np.cosh(hidden_input[j]))**2
@@ -132,7 +131,6 @@ class FeedForwardNeuralNetwork:
 
                     delta_bias_weights_0 = -self.training_parameters.mu * derror_biasweight_0
                     self.bias_weights[0] += delta_bias_weights_0
-
                     delta_input_weights = -self.training_parameters.mu * derror_diw
                     self.input_weights += delta_input_weights
 
@@ -146,4 +144,4 @@ class FeedForwardNeuralNetwork:
                 # print(self.output_weights, delta_output_weights)
                 # print("")
 
-                progress_bar.display(f"{np.sum(delta_input_weights):5.2e} {np.sum(delta_output_weights):5.2e}")
+                progress_bar.set_postfix(msg=f"{np.sum(delta_input_weights):5.2e} {np.sum(delta_output_weights):5.2e}")
