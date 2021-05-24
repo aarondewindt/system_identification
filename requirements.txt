@@ -7,4 +7,4 @@ sympy
 pandas
 numba
 tabulate
-tensorflow
+html2text
