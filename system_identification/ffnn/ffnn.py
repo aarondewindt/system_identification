@@ -22,14 +22,14 @@ class TrainingParameters:
 @dataclass
 class TrainingLog:
     error: float
-    delta_sum: float
 
 
 class FeedForwardNeuralNetwork:
     def __init__(self,
                  input_weights: np.ndarray,
                  output_weights: np.ndarray,
-                 bias_weights: Tuple[np.ndarray, np.ndarray],
+                 bias_weights_0: np.ndarray,
+                 bias_weights_1: np.ndarray,
                  range: np.ndarray,
                  training_parameters: TrainingParameters,
                  log_dir: Union[Path, str],
@@ -47,7 +47,8 @@ class FeedForwardNeuralNetwork:
 
         self.input_weights = input_weights
         self.output_weights = output_weights
-        self.bias_weights = list(bias_weights)
+        self.bias_weights_0 = bias_weights_0
+        self.bias_weights_1 = bias_weights_1
         self.range = range
         self.training_parameters = training_parameters
 
@@ -74,21 +75,19 @@ class FeedForwardNeuralNetwork:
         return cls(
             input_weights=np.random.rand(n_hidden, n_inputs),
             output_weights=np.random.rand(n_outputs, n_hidden),
-            bias_weights=(
-                np.random.rand(n_hidden, 1),
-                np.random.rand(n_outputs, 1)
-            ),
+            bias_weights_0=np.random.rand(n_hidden, 1),
+            bias_weights_1=np.random.rand(n_outputs, 1),
             range=range,
             training_parameters=training_parameters,
             log_dir=log_dir,
         )
 
     @classmethod
-    def saves_idxs(cls, log_dir: Union[Path, str]):
+    def saves_idxs(cls, log_dir: Union[Path, str], name="feedforward"):
         log_dir = Path(log_dir)
         idxs = set()
-        for path in log_dir.glob("feedforward_*.pickle"):
-            if match := re.match(r"feedforward_(\d+).pickle", path.name):
+        for path in log_dir.glob(f"feedforward_*.pickle"):
+            if match := re.match(rf"feedforward_(\d+).pickle", path.name):
                 idxs.add(int(match.group(1)))
         return sorted(idxs)
 
@@ -108,30 +107,8 @@ class FeedForwardNeuralNetwork:
             nn = cls(
                 input_weights=np.array(data['input_weights']),
                 output_weights=np.array(data['output_weights']),
-                bias_weights=(np.array(data['bias_weights0']), np.array(data['bias_weights1'])),
-                range=np.array(data['range']),
-                training_parameters=data['training_parameters'],
-                log_dir=log_dir)
-            nn._training_log = data['training_log']
-            return nn
-
-    @classmethod
-    def load(cls, log_dir: Union[Path, str], idx: Optional[int]=None):
-        if idx is None:
-            saves_idxs = cls.saves_idxs(log_dir)
-            if len(saves_idxs):
-                idx = saves_idxs[-1]
-            else:
-                return None
-
-        log_dir = Path(log_dir)
-        if (path := (log_dir / f"feedforward_{idx}.pickle")).exists():
-            with open(path, "rb") as f:
-                data = pickle.load(f)
-            nn = cls(
-                input_weights=np.array(data['input_weights']),
-                output_weights=np.array(data['output_weights']),
-                bias_weights=(np.array(data['bias_weights0']), np.array(data['bias_weights1'])),
+                bias_weights_0=np.array(data['bias_weights_0']),
+                bias_weights_1=np.array(data['bias_weights_1']),
                 range=np.array(data['range']),
                 training_parameters=data['training_parameters'],
                 log_dir=log_dir)
@@ -150,8 +127,8 @@ class FeedForwardNeuralNetwork:
             pickle.dump({
                 "input_weights": self.input_weights.tolist(),
                 "output_weights": self.output_weights.tolist(),
-                "bias_weights0": self.bias_weights[0].tolist(),
-                "bias_weights1": self.bias_weights[1].tolist(),
+                "bias_weights0": self.bias_weights_0.tolist(),
+                "bias_weights1": self.bias_weights_1.tolist(),
                 "range": self.range.tolist(),
                 "training_parameters": self.training_parameters,
                 "training_log": self._training_log
@@ -175,128 +152,62 @@ class FeedForwardNeuralNetwork:
             },
         }
 
-    def evaluate(self, input: Union[np.ndarray, Sequence[float]]):
-        # Make sure the input is a numpy column vector
-        input = np.asarray(input)[:, None]
+    def evaluate(self, input: np.ndarray):
+        """
+        Shape of input must be: (n_samples, n_inputs, 1).
+        Output shape will be: (n_samples, n_outputs, 1).
 
+        :param input:
+        :return:
+        """
         # Evaluate neural network
-        hidden = np.tanh(self.input_weights @ input + self.bias_weights[0])
-        return self.output_weights @ hidden + self.bias_weights[1]
+        hidden = np.tanh(self.input_weights @ input + self.bias_weights_0)
+        return self.output_weights @ hidden + self.bias_weights_1
+
+    def train(self, inputs, reference_outputs, epochs=None, method="back_propagation", train_log_freq=10):
+        epochs = epochs or self.training_parameters.epochs
+
+        if method == "back_propagation":
+            train_function = self.back_propagation
+        else:
+            raise ValueError(f"Unknown training method {method}.")
+
+        for i in trange(epochs):
+            train_function(inputs, reference_outputs)
+
+            if i % train_log_freq:
+                self._training_log.append(TrainingLog(self.evaluate_error(inputs, reference_outputs)))
 
     def back_propagation(self,
                          inputs: Union[np.ndarray, Sequence[float]],
-                         reference_outputs: Union[np.ndarray, Sequence[float]],
-                         epochs=None,
-                         dt_save=60):
-        epochs = epochs or self.training_parameters.epochs
+                         reference_outputs: Union[np.ndarray, Sequence[float]]):
+        mu = self.training_parameters.mu
 
-        inputs = np.atleast_2d(inputs)
-        reference_outputs = np.atleast_2d(reference_outputs)
+        hidden_input = self.input_weights @ inputs + self.bias_weights_0
+        hidden_output: np.ndarray = np.tanh(hidden_input)
+        output = self.output_weights @ hidden_output + self.bias_weights_1
 
-        assert inputs.shape[0] == reference_outputs.shape[0]
+        errors = reference_outputs - output
+
+        derror_dbiasweight_1 = np.sum(-errors, 0)
+        derror_dow = np.einsum("soj,shj->oh", -errors, hidden_output)
+
+        # Hidden layer activation function derivative
+        dvk_dwjk = (1 / np.cosh(hidden_input)) ** 2
+
+        derror_vj = np.einsum("soj,oh,shj->shj", -errors, self.output_weights, dvk_dwjk)
+        derror_biasweight_0 = np.sum(derror_vj, 0)
+        derror_diw = np.einsum("shj,sij->hi", derror_vj, inputs)
 
         n_samples = inputs.shape[0]
-
-        # self.save()
-        t_last_save = time()
-
-        with trange(epochs) as progress_bar:
-            for epoch_idx in progress_bar:
-                derror_biasweight_0 = np.zeros((self.n_hidden, 1))
-
-                epoch_error = 0
-                epoch_delta_bias_weights_0 = np.zeros((self.n_hidden, 1))
-                epoch_delta_bias_weights_1 = np.zeros((self.n_output, 1))
-                epoch_delta_input_weights = np.zeros(self.input_weights.shape)
-                epoch_delta_output_weights = np.zeros(self.output_weights.shape)
-
-                for input, reference_output in zip(inputs, reference_outputs):
-                    input = input[:, None]
-                    reference_output = reference_output[:, None]
-
-                    update_error, delta_bias_weights_0, delta_input_weights, \
-                    delta_bias_weights_1, delta_output_weights = calc_deltas(
-                        input,
-                        reference_output,
-                        self.training_parameters.mu,
-                        self.bias_weights[0],
-                        self.bias_weights[1],
-                        self.input_weights,
-                        self.output_weights)
-
-                    epoch_error += update_error
-                    epoch_delta_bias_weights_0 += delta_bias_weights_0
-                    epoch_delta_bias_weights_1 += delta_bias_weights_1
-                    epoch_delta_input_weights += delta_input_weights
-                    epoch_delta_output_weights += delta_output_weights
-
-                epoch_delta = \
-                    np.sum(abs(delta_bias_weights_0)) \
-                    + np.sum(abs(delta_bias_weights_1)) \
-                    + np.sum(abs(delta_input_weights)) \
-                    + np.sum(abs(delta_output_weights))
-
-                print(f"{epoch_delta_bias_weights_0=}")
-                print(f"{epoch_delta_bias_weights_1=}")
-                print(f"{epoch_delta_input_weights=}")
-                print(f"{epoch_delta_output_weights=}")
-
-                # self.bias_weights[0] += epoch_delta_bias_weights_0 / n_samples
-                # self.bias_weights[1] += epoch_delta_bias_weights_1 / n_samples
-                # self.input_weights += epoch_delta_input_weights / n_samples
-                # self.output_weights += epoch_delta_output_weights / n_samples
-
-                # if (time() - t_last_save) > dt_save:
-                #     t_last_save = time()
-                #     self.save()
-
-                self._training_log.append(TrainingLog(epoch_error, epoch_delta))
-                progress_bar.set_postfix(msg=f"{np.sum(delta_input_weights):5.2e} {np.sum(delta_output_weights):5.2e}")
-
-        self.save()
+        self.bias_weights_0 -= mu * derror_biasweight_0 / n_samples
+        self.bias_weights_1 -= mu * derror_dbiasweight_1 / n_samples
+        self.input_weights -= mu * derror_diw / n_samples
+        self.output_weights -= mu * derror_dow / n_samples
 
     def evaluate_error(self, inputs, reference_outputs):
-        inputs = np.atleast_2d(inputs)
-        reference_outputs = np.atleast_2d(reference_outputs)
-        error = 0
-        for input, reference_output in zip(inputs, reference_outputs):
-            output = self.evaluate(input)
-            error += np.sum(abs(reference_output - output))
-        return error
+        return np.sum(np.abs(reference_outputs - self.evaluate(inputs)))
 
     @property
     def training_log(self):
         return pd.DataFrame([asdict(log_entry) for log_entry in self._training_log])
-
-
-# @jit(nopython=True)
-def calc_deltas(input, reference_output, mu,
-                bias_weights_0, bias_weights_1, input_weights, output_weights):
-    hidden_input = input_weights @ input + bias_weights_0
-    hidden_output = np.tanh(hidden_input)
-    output = output_weights @ hidden_output + bias_weights_1
-
-    errors = reference_output - output
-    update_error = np.sum(np.abs(errors))
-
-    derror_biasweight_1 = -errors
-    derror_dow = -errors @ hidden_output.T
-
-    # Hidden layer activation function derivative
-    dvk_dwjk = (1 / np.cosh(hidden_input)) ** 2
-
-    n_hidden = input_weights.shape[0]
-    n_output = output_weights.shape[0]
-    derror_biasweight_0 = np.zeros((n_hidden, 1))
-    for j in range(n_hidden):
-        for k in range(n_output):
-            derror_biasweight_0[j] = -errors[k] * output_weights[k, j] * dvk_dwjk[j]
-
-    derror_diw = derror_biasweight_0 @ input.T
-
-    delta_bias_weights_0 = -mu * derror_biasweight_0
-    delta_input_weights = -mu * derror_diw
-    delta_bias_weights_1 = -mu * derror_biasweight_1
-    delta_output_weights = -mu * derror_dow
-
-    return update_error, delta_bias_weights_0, delta_input_weights, delta_bias_weights_1, delta_output_weights

@@ -58,8 +58,9 @@ class Model:
         # Hidden layer activation function derivative
         dvk_dwjk = (1 / np.cosh(hidden_input)) ** 2
 
-        derror_biasweight_0 = np.einsum("soj,oh,shj->hj", -errors, self.output_weights, dvk_dwjk)
-        derror_diw = np.einsum("hj,sij->hi", derror_biasweight_0, inputs)
+        derror_biasweight_0 = np.einsum("soj,oh,shj->shj", -errors, self.output_weights, dvk_dwjk)
+        derror_diw = np.einsum("shj,sij->hi", derror_biasweight_0, inputs)
+        derror_biasweight_0 = np.sum(derror_biasweight_0, 0)
 
         n_samples = inputs.shape[0]
         self.bias_weights_0 -= mu * derror_biasweight_0 / n_samples
