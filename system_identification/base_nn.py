@@ -10,18 +10,9 @@ from .utils.vdom import hyr
 
 
 @dataclass
-class TrainingParameters:
-    epochs: float
-    goal: float
-    min_grad: float
-    mu: float
-
-    def _repr_html_(self):
-        return hyr(title="TrainingParameters", root_type=type(self), content=asdict(self))
-
-
-@dataclass
 class TrainingLog:
+    epoch: int
+    grad: float
     error: float
 
     def _repr_html_(self):
@@ -43,6 +34,8 @@ class BaseNeuralNetwork(ABC):
               reference_outputs: np.ndarray,
               epochs: int=None,
               method: str="",
+              goal=0,
+              min_grad=1e-10,
               train_log_freq=1):
         ...
 

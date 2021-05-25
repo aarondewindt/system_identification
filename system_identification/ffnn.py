@@ -1,4 +1,4 @@
-from typing import Union, Sequence, Deque
+from typing import Union, Sequence, Deque, Optional
 from dataclasses import asdict
 from pathlib import Path
 from collections import deque
@@ -7,20 +7,18 @@ from tqdm.auto import trange
 import numpy as np
 import pandas as pd
 
-from .base_nn import TrainingLog, TrainingParameters, BaseNeuralNetwork
+from .base_nn import TrainingLog, BaseNeuralNetwork
 from .utils.vdom import hyr
 
 
 class FeedForwardNeuralNetwork(BaseNeuralNetwork):
     name = "feedforward"
     activation_functions = ("tansig", 'purelin')
-    training_algorithm = "trainlm"
 
     def __init__(self,
                  weights_0: np.ndarray,
                  weights_1: np.ndarray,
                  range: np.ndarray,
-                 training_parameters: TrainingParameters,
                  log_dir: Union[Path, str]):
         """
         Dense feedforward neural network.
@@ -46,13 +44,15 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
         self.n_inputs = weights_0.shape[1] - 1
         self.n_hidden = weights_0.shape[0]
         self.n_outputs = weights_1.shape[0]
-
-        # self.input_weights = input_weights
-        # self.output_weights = output_weights
-        # self.bias_weights_0 = bias_weights_0
-        # self.bias_weights_1 = bias_weights_1
         self.range = range
-        self.training_parameters = training_parameters
+
+        self.epochs = 0
+
+        self.training_parameters = {
+            "training_algorithm": None,
+            "goal": None,
+            "min_grad": None,
+        }
 
         self._training_log: Deque[TrainingLog] = deque()
 
@@ -99,7 +99,6 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
             n_outputs: float,
             n_hidden: float,
             range: Union[np.ndarray, Sequence[float]],
-            training_parameters: TrainingParameters,
             log_dir: Union[Path, str]):
         """
         Factory function used to create new FeedForwardNeuralNetwork instances.
@@ -120,7 +119,6 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
             weights_0=np.random.rand(n_hidden, n_inputs + 1),
             weights_1=np.random.rand(n_outputs, n_hidden + 1),
             range=range,
-            training_parameters=training_parameters,
             log_dir=log_dir,
         )
 
@@ -129,7 +127,7 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
         Shape of input must be: (n_samples, n_inputs, 1).
         Output shape will be: (n_samples, n_outputs, 1).
 
-        :param input:
+        :param inputs: Inputs to evaluate.
         :return:
         """
         # Evaluate hidden layer
@@ -141,108 +139,245 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
         hidden = np.insert(hidden, 0, 1, 1)
         return self.weights_1 @ hidden
 
-    def train(self, inputs, reference_outputs, epochs=None, method="trainbp", train_log_freq=10, **kwargs):
-        epochs = epochs or self.training_parameters.epochs
-
+    def train(self,
+              inputs,
+              reference_outputs,
+              epochs=1,
+              method="trainlm",
+              goal=0,
+              min_grad=1e-10,
+              train_log_freq=1,
+              **kwargs):
         inputs_with_bias = np.insert(inputs, 0, 1, 1)
 
         if method == "trainbp":
-            train_function = self.back_propagation
+            if "eta" not in kwargs:
+                raise ValueError("Parameter `eta` required for method `trainbp`.")
+            if "alpha" not in kwargs:
+                raise ValueError("Parameter `alpha` required for method `trainbp`.")
+            train_function = self._back_propagation
+
         elif method == "trainlm":
-            train_function = self.levenberg_marquardt
+            if "mu" not in kwargs:
+                raise ValueError("Parameter `mu` required for method `trainlm`.")
+            train_function = self._levenberg_marquardt
+
         else:
             raise ValueError(f"Unknown training method {method}.")
 
-        for i in trange(epochs):
-            train_function(inputs_with_bias, reference_outputs, **kwargs)
+        if self.training_parameters["training_algorithm"] is None:
+            self.training_parameters["training_algorithm"] = method
+        else:
+            if self.training_parameters["training_algorithm"] != method:
+                raise ValueError("Changing training algorithm on trained model not allowed.")
+
+        self.training_parameters["goal"] = goal
+        self.training_parameters["min_grad"] = min_grad
+        self.training_parameters["epochs"] = epochs
+        self.training_parameters.update(kwargs)
+
+        for i, grad in zip(trange(epochs - self.epochs), train_function(inputs_with_bias, reference_outputs, **kwargs)):
+            if self.epochs >= epochs:
+                break
+
+            self.epochs += 1
+
+            if grad <= self.training_parameters["min_grad"]:
+                break
 
             if not (i % train_log_freq):
-                self._training_log.append(TrainingLog(self.evaluate_error(inputs, reference_outputs)))
+                error = self.evaluate_error(inputs, reference_outputs)
+                if error < self.training_parameters["goal"]:
+                    break
 
-    def back_propagation(self,
-                         inputs: Union[np.ndarray, Sequence[float]],
-                         reference_outputs: Union[np.ndarray, Sequence[float]],
-                         eta: float,
-                         alpha: float
-                         ):
-        hidden_preact = self.weights_0 @ inputs  # Hidden layer value before activation
-        hidden_posact = np.tanh(hidden_preact)  # Hidden layer value after activation.
+                self._training_log.append(TrainingLog(self.epochs, grad, error))
 
-        hidden_posact = np.insert(hidden_posact, 0, 1, 1)
-        output = self.weights_1 @ hidden_posact
+    def _back_propagation(self,
+                          inputs: np.ndarray,
+                          reference_outputs: np.ndarray,
+                          eta: float,
+                          alpha: Optional[float],
+                          **_
+                          ):
+        """
+        Generator that performs one backpropagation step on each iteration.
 
-        errors = reference_outputs - output
+        ..note: Do not call this function directly. Use train(...) instead.
 
-        dcost_dweights_1 = np.einsum("qkm,qjm->kj", -errors, hidden_posact)
-
-        # Hidden layer activation function derivative
-        dvk_dwjk = (1 / np.cosh(hidden_preact)) ** 2
-
-        dcost_dweights_0 = np.einsum("qkm,kj,qjm,qim->ji", -errors, self.weights_1[:, 1:], dvk_dwjk, inputs)
-
-        n_samples = inputs.shape[0]
-        self.weights_0 -= eta * dcost_dweights_0 / n_samples
-        self.weights_1 -= eta * dcost_dweights_1 / n_samples
-
-    def levenberg_marquardt(self,
-                            inputs: np.ndarray,
-                            reference_outputs: np.ndarray,
-                            mu):
+        :param inputs: Must have shape (n_samples, n_input + 1, 1). It's assumed
+                       that the bias input is already included.
+        :param reference_outputs: Outputs for each input. Must have shape (n_samples, n_output, 1)
+        :param eta: Learning rate.
+        :param alpha: Adaptive factor. If None, then the learning rate will not be adapted.
+        :yields: Absolute sum of the gradients on each iteration.
+        """
         # q: n_samples
         # i: n_input + 1
         # j: n_hidden (later n_hidden+1)
         # k: n_output
+        # m: 1
 
-        # (q, j, 1) = (j, i) @ (q, i, 1)
-        hidden_preact = self.weights_0 @ inputs  # Hidden layer value before activation. vj
-        hidden_posact = np.tanh(hidden_preact)  # Hidden layer value after activation. yj
+        last_error = None
 
-        hidden_posact = np.insert(hidden_posact, 0, 1, 1)  # Add bias, j is now (n_hidden + 1)
-        # (q, k, 1) = (k, j) @ (q, j, 1)
-        output = self.weights_1 @ hidden_posact
+        # Infinite loop. This is a generator that will indefinitely update the
+        # weights on each iteration. The train(...) function handles the end
+        # conditions.
+        while True:
+            # Evaluate network to get the hidden layer, output and error values.
+            # ==================================================================
 
-        errors = np.sum(reference_outputs - output, axis=(1))
+            # (q, j, 1) = (j, i) @ (q, i, 1)   # j is n_hidden
+            hidden_preact = self.weights_0 @ inputs  # Hidden layer value before activation
+            hidden_posact = np.tanh(hidden_preact)  # Hidden layer value after activation.
 
-        derror_dweights_1 = -hidden_posact[..., 0]  # (q, j)
-        if self.n_outputs > 1:
-            derror_dweights_1 = np.hstack([derror_dweights_1] * self.n_outputs)
+            # (q, k, 1) = (k, j) @ (q, j, 1)
+            hidden_posact = np.insert(hidden_posact, 0, 1, 1)  # Add bias, j is now (n_hidden + 1)
+            output = self.weights_1 @ hidden_posact
+            errors = reference_outputs - output
 
-        dvk_dwjk = (1 / np.cosh(hidden_preact)) ** 2  # (q, j, 1),  j is now n_hidden
+            # Calculate cost function derivatives.
+            # ====================================
+            dcost_dweights_1 = np.einsum("qkm,qjm->kj", -errors, hidden_posact)
 
-        derror_dweights_0 = np.einsum("kj,qjm,qim->qji", -self.weights_1[:, 1:], dvk_dwjk, inputs)  # (q, j, i)
-        derror_dweights_0 = derror_dweights_0.reshape((derror_dweights_0.shape[0], -1))  # (q, x)
+            # Hidden layer activation function derivative
+            dvk_dwjk = (1 / np.cosh(hidden_preact)) ** 2
 
-        j = np.hstack((derror_dweights_0, derror_dweights_1))
+            # j is now n_hidden
+            dcost_dweights_0 = np.einsum("qkm,kj,qjm,qim->ji", -errors, self.weights_1[:, 1:], dvk_dwjk, inputs)
 
-        delta_weights = np.linalg.inv(j.T @ j + mu * np.eye(j.shape[1])) @ j.T @ errors
+            n_samples = inputs.shape[0]
+            self.weights_0 -= eta * dcost_dweights_0 / n_samples
+            self.weights_1 -= eta * dcost_dweights_1 / n_samples
 
-        delta_weights_0 = delta_weights[:(self.n_hidden * (self.n_inputs + 1))].reshape((self.n_hidden, self.n_inputs + 1))
-        delta_weights_1 = delta_weights[(self.n_hidden * (self.n_inputs + 1)):].reshape((self.n_outputs, self.n_hidden + 1))
+            # Adapt learning rate
+            error = np.sum(np.abs(errors))
+            if last_error and alpha:
+                if error < last_error:
+                    eta *= alpha
+                else:
+                    eta /= alpha
+            last_error = error
 
-        self.weights_0 -= delta_weights_0
-        self.weights_1 -= delta_weights_1
+            # Yield gradient absolute sum to let the train(...) function log and check for end conditions.
+            yield np.sum(np.abs(dcost_dweights_0)) + np.sum(np.abs(dcost_dweights_0))
+
+    def _levenberg_marquardt(self,
+                             inputs: np.ndarray,
+                             reference_outputs: np.ndarray,
+                             mu: float,
+                             alpha: Optional[float],
+                             **_):
+        """
+        Generator that performs one Levenberg-Marquardt step on each iteration.
+
+        ..note: Do not call this function directly. Use train(...) instead.
+
+        :param inputs: Must have shape (n_samples, n_input + 1, 1). It's assumed
+                       that the bias input is already included.
+        :param reference_outputs: Outputs for each input. Must have shape (n_samples, n_output, 1)
+        :param eta: Damping parameter.
+        :param alpha: Adaptive factor. If None, then the damping parameter will not be adapted.
+        :yields: Absolute sum of the gradients on each iteration.
+        """
+        # q: n_samples
+        # i: n_input + 1
+        # j: n_hidden (later n_hidden+1)
+        # k: n_output
+        # m: 1
+        # x: n_output * (n_hidden + 1)
+        # y: n_hidden * (n_input + 1)
+
+        last_error = None
+        while True:
+            # Evaluate network to get hidden layer, output and error values.
+            # ==============================================================
+            # (q, j, 1) = (j, i) @ (q, i, 1)
+            hidden_preact = self.weights_0 @ inputs  # Hidden layer value before activation. vj
+            hidden_posact = np.tanh(hidden_preact)  # Hidden layer value after activation. yj
+
+            hidden_posact = np.insert(hidden_posact, 0, 1, 1)  # Add bias, j is now (n_hidden + 1)
+            # (q, k, 1) = (k, j) @ (q, j, 1)
+            output = self.weights_1 @ hidden_posact
+
+            errors = np.sum(reference_outputs - output, axis=1)
+
+            # Calculate error derivatives
+            # ===========================
+            derror_dweights_1 = -hidden_posact[..., 0]  # (q, j)
+
+            # The derivatives are the same through all outputs. So just repeat the same gradients
+            # for each output if we have multiple.
+            if self.n_outputs > 1:
+                # (q, x)
+                derror_dweights_1 = np.hstack([derror_dweights_1] * self.n_outputs)
+
+            dvk_dwjk = (1 / np.cosh(hidden_preact)) ** 2  # (q, j, 1),  j is now n_hidden
+
+            derror_dweights_0 = np.einsum("kj,qjm,qim->qji", -self.weights_1[:, 1:], dvk_dwjk, inputs)  # (q, j, i)
+
+            # Flatten derivatives so each row contains the derivatives for each sample.
+            derror_dweights_0 = derror_dweights_0.reshape((derror_dweights_0.shape[0], -1))  # (q, y)
+
+            # Stack derivatives for the input and output gains.
+            j = np.hstack((derror_dweights_0, derror_dweights_1))
+
+            # Calculate weight updates.
+            # =========================
+            delta_weights = np.linalg.inv(j.T @ j + mu * np.eye(j.shape[1])) @ j.T @ errors
+
+            # Unpack and restructure deltas so they can be applied to the weights.
+            delta_weights_0 = \
+                delta_weights[:(self.n_hidden * (self.n_inputs + 1))].reshape((self.n_hidden, self.n_inputs + 1))
+            delta_weights_1 = \
+                delta_weights[(self.n_hidden * (self.n_inputs + 1)):].reshape((self.n_outputs, self.n_hidden + 1))
+
+            self.weights_0 -= delta_weights_0
+            self.weights_1 -= delta_weights_1
+
+            # Adapt mu
+            error = np.sum(np.abs(errors))
+            if last_error and alpha:
+                if error < last_error:
+                    mu *= alpha
+                else:
+                    mu /= alpha
+
+            yield np.sum(np.abs(derror_dweights_0)) + np.sum(np.abs(derror_dweights_1))
+            last_error = error
 
     def evaluate_error(self, inputs, reference_outputs):
+        """
+        Evaluated the neural network and calculates the absolute sum of the errors.
+
+        :param inputs: Must have shape (n_samples, n_inputs, 1).
+        :param reference_outputs: Must have shape (n_samples, n_outputs, 1). Expected ouputs
+                                  for the inputs.
+        :return: Absolute sum of the errors.
+        """
         return np.sum(np.abs(reference_outputs - self.evaluate(inputs))) / inputs.shape[0]
 
     @property
     def training_log(self):
+        """
+        `xarray.Dataset` of the training log.
+        :return:
+        """
         return pd.DataFrame([asdict(log_entry) for log_entry in self._training_log])
 
     def save_matlab(self):
+        """
+        Saves the matlab structure given in the assignment.
+        :return:
+        """
         mdict = {
             "name": self.name,
             "trainFunct": self.activation_functions,
             "trainAlg": self.training_algorithm,
-
             "IW": self.input_weights,
             "LW": self.output_weights,
-            "b": self.bias_weights,
+            "b": [self.bias_weights_0, self.bias_weights_1],
             "range": self.range,
-            "trainParam": {
-                "epochs": self.training_parameters.epochs,
-                "goal": self.training_parameters.goal,
-                "min_grad": self.training_parameters.min_grad,
-                "mu": self.training_parameters.mu,
-            },
+            "trainParam": self.training_parameters,
         }
+
+        raise NotImplementedError()
