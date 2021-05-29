@@ -1,17 +1,16 @@
 from typing import Union, Sequence, Deque, Optional
 from dataclasses import asdict
 from pathlib import Path
-from collections import deque
 
 from tqdm.auto import trange
 import numpy as np
 import pandas as pd
 
-from .base_nn import TrainingLog, BaseNeuralNetwork
+from .base_model import TrainingLog, BaseModel
 from .utils.vdom import hyr
 
 
-class FeedForwardNeuralNetwork(BaseNeuralNetwork):
+class FeedForwardNeuralNetwork(BaseModel):
     name = "feedforward"
     activation_functions = ("tansig", 'purelin')
 
@@ -33,6 +32,8 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
         :param log_dir: Directory to store network training history.
         """
 
+        super().__init__()
+
         assert weights_0.shape[0] == (weights_1.shape[1] - 1)
 
         self.log_dir = Path(log_dir)
@@ -53,8 +54,6 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
             "goal": None,
             "min_grad": None,
         }
-
-        self._training_log: Deque[TrainingLog] = deque()
 
     def __repr__(self):
         return f"<FeedForwardNeuralNetwork\n" \
@@ -107,7 +106,6 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
         :param n_outputs: Number of outputs
         :param n_hidden: Number of cells in the hidden layer.
         :param range: Range of each input.
-        :param training_parameters: Training parameters.
         :param log_dir: Directory to store network training history.
         :return: New FeedForwardNeuralNetwork instance.
         """
@@ -140,15 +138,42 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
         return self.weights_1 @ hidden
 
     def train(self,
-              inputs,
-              reference_outputs,
-              epochs=1,
-              method="trainlm",
-              goal=0,
-              min_grad=1e-10,
-              train_log_freq=1,
+              inputs: np.ndarray,
+              reference_outputs: np.ndarray,
+              epochs: int=1,
+              method: str="trainlm",
+              goal: float=0.,
+              min_grad: float=1e-10,
+              train_log_freq: int=1,
+              evaluation_inputs: Optional[np.ndarray]=None,
+              evaluation_reference_outputs: Optional[np.ndarray]=None,
               **kwargs):
-        inputs_with_bias = np.insert(inputs, 0, 1, 1)
+        """
+        Train feedforward neural network.
+
+        :param inputs: Training input data. Must have shape (n_samples, n_inputs, 1).
+        :param reference_outputs: Training output data. Must have shape (n_samples, n_outputs, 1).
+        :param epochs: Maximum number of training epochs.
+        :param method: Training algorithm. Valid values are `trainbp` for back propagation and `trainlm`
+                       for Levenberg Marquardt.
+        :param goal: Target maximum error. The training will stop once the evaluated error is under the goal.
+        :param min_grad: Minimum gradient. The training will stop once the absolute sum gradients is below
+                         this value.
+        :param train_log_freq: Number of epochs between error evaluation and logging steps.
+        :param evaluation_inputs: Optional evaluation input data. By default the training data is used.
+        :param evaluation_reference_outputs: Optional evaluation input data. By default the training data is used.
+        :param kwargs: Extra parameters passed to the training algorith functions.
+                       Both accept `alpha`. `trainbp` accepts `eta` and `trainlm` accepts `mu`. `alpha` may be
+                       set to `None` to make it non-adaptive.
+        """
+
+        assert (evaluation_inputs is None) == (evaluation_reference_outputs is None), \
+            "Both the evaluation inputs and reference outputs must be given or omitted."
+
+        evaluation_inputs = evaluation_inputs or inputs
+        evaluation_reference_outputs = evaluation_reference_outputs or reference_outputs
+
+        inputs = np.insert(inputs, 0, 1, 1)
 
         if method == "trainbp":
             if "eta" not in kwargs:
@@ -176,7 +201,7 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
         self.training_parameters["epochs"] = epochs
         self.training_parameters.update(kwargs)
 
-        for i, grad in zip(trange(epochs - self.epochs), train_function(inputs_with_bias, reference_outputs, **kwargs)):
+        for i, grad in zip(trange(epochs - self.epochs), train_function(inputs, reference_outputs, **kwargs)):
             if self.epochs >= epochs:
                 break
 
@@ -186,11 +211,11 @@ class FeedForwardNeuralNetwork(BaseNeuralNetwork):
                 break
 
             if not (i % train_log_freq):
-                error = self.evaluate_error(inputs, reference_outputs)
+                error = self.evaluate_error(evaluation_inputs, evaluation_reference_outputs)
                 if error < self.training_parameters["goal"]:
                     break
 
-                self._training_log.append(TrainingLog(self.epochs, grad, error))
+                self.log(self.epochs, grad, error)
 
     def _back_propagation(self,
                           inputs: np.ndarray,
