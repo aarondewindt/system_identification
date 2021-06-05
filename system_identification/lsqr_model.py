@@ -57,7 +57,7 @@ class LeastSquaresModel(BaseModel):
                    description=f"Least squares model fitting a `{order}` order polynomial.")
 
     def _repr_html_(self):
-        return hyr(title="Least squares model", root_type=type(self), content={
+        return hyr(title="Least squares model", root_type=type(self), top_n_open=0, content={
             "description": self.description,
             "n_inputs": self.n_inputs,
             "n_output": self.n_outputs,

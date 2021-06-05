@@ -71,7 +71,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                f" n_outputs={self.n_outputs}>"
 
     def _repr_html_(self):
-        return hyr(title="Radial Basis Function Neural Network", root_type=type(self), content={
+        return hyr(title="Radial Basis Function Neural Network", root_type=type(self), top_n_open=0, content={
             "description": self.description,
             "n_inputs": self.n_inputs,
             "n_hidden": self.n_hidden,

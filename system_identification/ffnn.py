@@ -65,7 +65,7 @@ class FeedForwardNeuralNetwork(BaseModel):
                f" n_outputs={self.n_outputs}>"
 
     def _repr_html_(self):
-        return hyr(title="Feed Forward Neural Network", root_type=type(self), content={
+        return hyr(title="Feed Forward Neural Network", root_type=type(self), top_n_open=0, content={
             "description": self.description,
             "n_inputs": self.n_inputs,
             "n_hidden": self.n_hidden,
@@ -78,7 +78,6 @@ class FeedForwardNeuralNetwork(BaseModel):
             "training_parameters": self.training_parameters,
             "log_dir": self.log_dir,
         }).to_html()
-
 
     @property
     def input_weights(self):
@@ -175,8 +174,8 @@ class FeedForwardNeuralNetwork(BaseModel):
         assert (evaluation_inputs is None) == (evaluation_reference_outputs is None), \
             "Both the evaluation inputs and reference outputs must be given or omitted."
 
-        evaluation_inputs = evaluation_inputs if evaluation_inputs is None else inputs
-        evaluation_reference_outputs = evaluation_reference_outputs if evaluation_reference_outputs is None else reference_outputs
+        evaluation_inputs = inputs if evaluation_inputs is None else evaluation_inputs
+        evaluation_reference_outputs = reference_outputs if evaluation_reference_outputs is None else evaluation_reference_outputs
 
         inputs = np.insert(inputs, 0, 1, 1)
 
@@ -208,16 +207,19 @@ class FeedForwardNeuralNetwork(BaseModel):
 
         for i, grad in zip(trange(epochs - self.epochs), train_function(inputs, reference_outputs, **kwargs)):
             if self.epochs >= epochs:
+                print("Max number of epochs reached")
                 break
 
             self.epochs += 1
 
             if grad <= self.training_parameters["min_grad"]:
+                print("Minimum gradients reached")
                 break
 
             if not (i % train_log_freq):
                 error = self.evaluate_error(evaluation_inputs, evaluation_reference_outputs)
                 if error < self.training_parameters["goal"]:
+                    print("Goal met")
                     break
 
                 self.log(self.epochs, grad, error)
@@ -289,7 +291,7 @@ class FeedForwardNeuralNetwork(BaseModel):
             last_error = error
 
             # Yield gradient absolute sum to let the train(...) function log and check for end conditions.
-            yield np.sum(np.abs(dcost_dweights_0)) + np.sum(np.abs(dcost_dweights_0))
+            yield np.sum(np.abs(dcost_dweights_0)) + np.sum(np.abs(dcost_dweights_1))
 
     def _levenberg_marquardt(self,
                              inputs: np.ndarray,
