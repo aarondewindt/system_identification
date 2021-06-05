@@ -3,12 +3,9 @@ from functools import partial
 from itertools import product
 
 import numpy as np
-import xarray as xr
-import xarray.ufuncs as xf
-import matplotlib.pyplot as plt
 from scipy.optimize import lsq_linear
 
-from .base_model import TrainingLog, BaseModel
+from .base_model import BaseModel
 from .utils.vdom import hyr
 
 
@@ -17,27 +14,31 @@ class LeastSquaresModel(BaseModel):
     activation_functions = None
     training_algorithm = "lstsqr"
 
-    def __init__(self, func):
+    def __init__(self, func, n_inputs, range, description):
         """
 
         :param func: Function used to calculate the rows of the rows of the A matrix.
         """
-        super().__init__()
+        super().__init__(n_inputs, 1, range, description)
 
         self.func = func
         self.coefficients = None
 
     @classmethod
     def new_polynomial(cls,
-                       n_input: int,
+                       n_inputs: int,
+                       range: np.array,
                        order: int):
         """
         Create new LeastSquaresModel based on a polynomial.
 
-        :param n_input: Number of inputs.
+        :param n_inputs: Number of inputs.
+        :param range: Range of each input.
         :param order: Polynomial order.
         :return:
         """
+        range = np.atleast_2d(range)
+        assert range.shape == (n_inputs, 2), "There must be one row in range per input."
 
         # Function that calculates the terms of a multivariate power series with
         # all coefficients set to 1.
@@ -46,11 +47,23 @@ class LeastSquaresModel(BaseModel):
         # [1, y, y**2, x, x*y, x*y**2, x**2, x**2*y, x**2*y**2]
         # So if x=2 and y=3 the list will contain:
         # [1, 3, 9, 2, 6, 18, 4, 12, 36]
-        def polynomial_func(inputs, n_input, order):
+        def polynomial_func(inputs, n_inputs, order):
             return [np.prod([inp**exp for inp, exp in zip(inputs, exponentials)])
-                    for exponentials in product(*(range(order+1) for i in range(n_input)))]
+                    for exponentials in product(*(range(order+1) for i in range(n_inputs)))]
 
-        return cls(func=partial(polynomial_func, n_input=n_input, order=order))
+        return cls(func=partial(polynomial_func, n_inputs=n_inputs, order=order),
+                   n_inputs=n_inputs,
+                   range=range,
+                   description=f"Least squares model fitting a `{order}` order polynomial.")
+
+    def _repr_html_(self):
+        return hyr(title="Least squares model", root_type=type(self), content={
+            "description": self.description,
+            "n_inputs": self.n_inputs,
+            "n_output": self.n_outputs,
+            "n_coefficients": self.coefficients.size if self.coefficients else self.coefficients,
+            "range": self.range
+        }).to_html()
 
     def evaluate(self, inputs: np.ndarray):
         if self.coefficients is None:
@@ -91,8 +104,8 @@ class LeastSquaresModel(BaseModel):
         assert (evaluation_inputs is None) == (evaluation_reference_outputs is None), \
             "Both the evaluation inputs and reference outputs must be given or omitted."
 
-        evaluation_inputs = evaluation_inputs or inputs.copy()
-        evaluation_reference_outputs = evaluation_reference_outputs or reference_outputs.copy()
+        evaluation_inputs = evaluation_inputs if evaluation_inputs is None else inputs
+        evaluation_reference_outputs = evaluation_reference_outputs if evaluation_reference_outputs is None else reference_outputs
 
         # Remove the last dimension.
         inputs = inputs[..., 0]
@@ -105,6 +118,7 @@ class LeastSquaresModel(BaseModel):
 
         self.coefficients = result.x
 
+        self._training_log.clear()
         self.log(1, np.nan, self.evaluate_error(evaluation_inputs, evaluation_reference_outputs))
 
     def save_matlab(self):

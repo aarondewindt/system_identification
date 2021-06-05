@@ -23,7 +23,11 @@ class BaseModel(ABC):
     activation_functions = tuple()
     training_algorithm = ""
 
-    def __init__(self):
+    def __init__(self, n_inputs, n_outputs, range, description):
+        self.n_inputs = n_inputs
+        self.n_outputs = n_outputs
+        self.range = range
+        self.description = description
         self._training_log: Deque[TrainingLog] = deque()
 
     @abstractmethod

@@ -6,7 +6,7 @@ from tqdm.auto import trange
 import numpy as np
 import pandas as pd
 
-from .base_model import TrainingLog, BaseModel
+from .base_model import BaseModel
 from .utils.vdom import hyr
 
 
@@ -18,7 +18,8 @@ class FeedForwardNeuralNetwork(BaseModel):
                  weights_0: np.ndarray,
                  weights_1: np.ndarray,
                  range: np.ndarray,
-                 log_dir: Union[Path, str]):
+                 log_dir: Union[Path, str],
+                 description: str):
         """
         Dense feedforward neural network.
 
@@ -28,23 +29,25 @@ class FeedForwardNeuralNetwork(BaseModel):
         :param weights_0: (n_hidden x (n_input + 1)) matrix. Weights between the input and hidden layer.
         :param weights_1: (n_output x (n_hidden + 1)) matrix. Weights between the hidden and output layer.
         :param range: (n_input x 2) matrix with the range of each input in each row.
-        :param training_parameters: Training parameters.
         :param log_dir: Directory to store network training history.
         """
 
-        super().__init__()
+        super().__init__(
+            n_inputs=weights_0.shape[1] - 1,
+            n_outputs=weights_1.shape[0],
+            range=range,
+            description=description,
+        )
 
         assert weights_0.shape[0] == (weights_1.shape[1] - 1)
 
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(exist_ok=True)
 
-        self.weights_0 = weights_0
-        self.weights_1 = weights_1
+        self.weights_0 = weights_0  #: Input weights, including bias weights on in the first column.
+        self.weights_1 = weights_1  #: Outputs weights, including bias weights on in the first column.
 
-        self.n_inputs = weights_0.shape[1] - 1
         self.n_hidden = weights_0.shape[0]
-        self.n_outputs = weights_1.shape[0]
         self.range = range
 
         self.epochs = 0
@@ -63,6 +66,7 @@ class FeedForwardNeuralNetwork(BaseModel):
 
     def _repr_html_(self):
         return hyr(title="Feed Forward Neural Network", root_type=type(self), content={
+            "description": self.description,
             "n_inputs": self.n_inputs,
             "n_hidden": self.n_hidden,
             "n_output": self.n_outputs,
@@ -94,9 +98,9 @@ class FeedForwardNeuralNetwork(BaseModel):
 
     @classmethod
     def new(cls,
-            n_inputs: float,
-            n_outputs: float,
-            n_hidden: float,
+            n_inputs: int,
+            n_outputs: int,
+            n_hidden: int,
             range: Union[np.ndarray, Sequence[float]],
             log_dir: Union[Path, str]):
         """
@@ -118,6 +122,7 @@ class FeedForwardNeuralNetwork(BaseModel):
             weights_1=np.random.rand(n_outputs, n_hidden + 1),
             range=range,
             log_dir=log_dir,
+            description="Feedforward neural network with random initial weights."
         )
 
     def evaluate(self, inputs: np.ndarray):
@@ -170,8 +175,8 @@ class FeedForwardNeuralNetwork(BaseModel):
         assert (evaluation_inputs is None) == (evaluation_reference_outputs is None), \
             "Both the evaluation inputs and reference outputs must be given or omitted."
 
-        evaluation_inputs = evaluation_inputs or inputs
-        evaluation_reference_outputs = evaluation_reference_outputs or reference_outputs
+        evaluation_inputs = evaluation_inputs if evaluation_inputs is None else inputs
+        evaluation_reference_outputs = evaluation_reference_outputs if evaluation_reference_outputs is None else reference_outputs
 
         inputs = np.insert(inputs, 0, 1, 1)
 
