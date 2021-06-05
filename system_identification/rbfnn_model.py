@@ -12,7 +12,7 @@ from .utils.vdom import hyr
 from .lsqr_model import LeastSquaresModel
 
 
-class RadialBasisFunctionNeuralNetwork(BaseModel):
+class RadialBasisFunctionNeuralNetworkModel(BaseModel):
     name = "rbf"
     activation_functions = ("tansig", 'purelin')
 
