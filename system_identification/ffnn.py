@@ -182,8 +182,7 @@ class FeedForwardNeuralNetwork(BaseModel):
         if method == "trainbp":
             if "eta" not in kwargs:
                 raise ValueError("Parameter `eta` required for method `trainbp`.")
-            if "alpha" not in kwargs:
-                raise ValueError("Parameter `alpha` required for method `trainbp`.")
+
             train_function = self._back_propagation
 
         elif method == "trainlm":
@@ -228,7 +227,7 @@ class FeedForwardNeuralNetwork(BaseModel):
                           inputs: np.ndarray,
                           reference_outputs: np.ndarray,
                           eta: float,
-                          alpha: Optional[float],
+                          alpha: Optional[float]=None,
                           **_
                           ):
         """
@@ -297,7 +296,7 @@ class FeedForwardNeuralNetwork(BaseModel):
                              inputs: np.ndarray,
                              reference_outputs: np.ndarray,
                              mu: float,
-                             alpha: Optional[float],
+                             alpha: Optional[float]=None,
                              **_):
         """
         Generator that performs one Levenberg-Marquardt step on each iteration.
@@ -373,9 +372,9 @@ class FeedForwardNeuralNetwork(BaseModel):
                     mu *= alpha
                 else:
                     mu /= alpha
+            last_error = error
 
             yield np.sum(np.abs(derror_dweights_0)) + np.sum(np.abs(derror_dweights_1))
-            last_error = error
 
     def evaluate_error(self, inputs, reference_outputs):
         """

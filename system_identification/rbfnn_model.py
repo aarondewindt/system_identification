@@ -27,7 +27,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         Dense neural network with radial basis function activation in the hidden layer.
 
         ..note: Do not use this constructor to create new RadialBasisFunctionNeuralNetwork instances. Use the
-                RadialBasisFunctionNeuralNetwork.new(...) factory function instead.
+                RadialBasisFunctionNeuralNetwork.new_###(...) factory functions instead.
 
         :param weights_0: (n_hidden x (n_input + 1)) matrix. Weights between the input and hidden layer.
         :param weights_1: (n_output x (n_hidden + 1)) matrix. Weights between the hidden and output layer.
@@ -89,7 +89,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
     def new(cls,
             n_inputs: int,
             n_hidden: int,
-            range: Union[np.ndarray, Sequence[float]],
+            input_range: Union[np.ndarray, Sequence[float]],
             log_dir: Union[Path, str]):
         """
         Factory function used to create new RadialBasisFunctionNeuralNetwork instances with random weights.
@@ -97,13 +97,13 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         :param n_inputs: Number of inputs
         :param n_outputs: Number of outputs
         :param n_hidden: Number of cells in the hidden layer.
-        :param range: Range of each input.
+        :param input_range: Range of each input.
         :param log_dir: Directory to store network training history.
         :return: New RadialBasisFunctionNeuralNetwork instance.
         """
 
-        range = np.atleast_2d(range)
-        assert range.shape == (n_inputs, 2), "There must be one row in range per input."
+        input_range = np.atleast_2d(input_range)
+        assert input_range.shape == (n_inputs, 2), "There must be one row in range per input."
 
         # TODO: Initialize weights_c to place the rbf's across the input range instead of just between [0, 1)
 
@@ -111,7 +111,27 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             weights_a=np.random.rand(n_hidden,),
             weights_c=np.random.rand(n_hidden, n_inputs),
             weights_w=np.random.rand(n_hidden, n_inputs),
-            range=range,
+            range=input_range,
+            log_dir=log_dir,
+            description="Feedforward neural network with random initial weights."
+        )
+
+    @classmethod
+    def new_random_placement(cls,
+                             n_inputs: int,
+                             n_hidden: int,
+                             rbf_width: float,
+                             rbf_amplitude: float,
+                             input_range: Union[np.ndarray, Sequence[float]],
+                             log_dir: Union[Path, str]):
+        input_range = np.atleast_2d(input_range)
+        weights_c = np.hstack([np.random.uniform(*ir, (n_hidden, 1)) for ir in input_range])
+
+        return cls(
+            weights_a=np.ones((n_hidden,)) * rbf_amplitude,
+            weights_c=weights_c,
+            weights_w=np.ones((n_hidden, n_inputs)) * rbf_width,
+            range=input_range,
             log_dir=log_dir,
             description="Feedforward neural network with random initial weights."
         )
@@ -123,7 +143,12 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                            input_range: Union[np.ndarray, Sequence[float]],
                            rbf_width: float,
                            rbf_amplitude: float,
-                           log_dir: Union[Path, str]):
+                           log_dir: Union[Path, str],
+                           description: Optional[str]= None):
+
+        # Make sure we have one min/max range for each input.
+        input_range = np.atleast_2d(input_range)
+        assert input_range.shape == (n_inputs, 2)
 
         # List containing vectors with the grid coordinates.
         # Eg. Assume 2 inputs, a (2x3) grid size and inputs range [(1, 4), (-1, 1)]
@@ -133,7 +158,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
         # Loop through all combinations of coordinates to get the
         # coordinates at each node in the grid.
-        # Put these coordinates in each row of the weight matrix
+        # Put these coordinates in each row of the centers matrix.
         weights_c = np.array(list(product(*rbf_coordinates)))
 
         # The number of hidden cells, aka the number of rbf's, is now known.
@@ -145,7 +170,8 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             weights_w=np.ones((n_hidden, n_inputs)) * rbf_width,
             range=input_range,
             log_dir=log_dir,
-            description="Radial basis function neural network with random initial weights."
+            description=description or "Radial basis function neural network with "
+                                       "the initial centers placed in a uniform grid."
         )
 
     def evaluate(self, inputs: np.ndarray):
@@ -204,6 +230,40 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
         if method == "trainlsqr":
             self._least_squares(inputs, reference_outputs, evaluation_inputs, evaluation_reference_outputs)
+            return
+
+        elif method == "trainlm":
+            if "mu" not in kwargs:
+                raise ValueError("Parameter `mu` required for method `trainlm`.")
+            train_function = self._levenberg_marquardt
+
+        else:
+            raise ValueError(f"Unknown training method {method}.")
+
+        self.training_parameters["training_algorithm"] = method
+        self.training_parameters["goal"] = goal
+        self.training_parameters["min_grad"] = min_grad
+        self.training_parameters["epochs"] = epochs
+        self.training_parameters.update(kwargs)
+
+        for i, grad in zip(trange(epochs - self.epochs), train_function(inputs, reference_outputs, **kwargs)):
+            if self.epochs >= epochs:
+                print("Max number of epochs reached")
+                break
+
+            self.epochs += 1
+
+            if grad <= self.training_parameters["min_grad"]:
+                print("Minimum gradients reached")
+                break
+
+            if not (i % train_log_freq):
+                error = self.evaluate_error(evaluation_inputs, evaluation_reference_outputs)
+                if error < self.training_parameters["goal"]:
+                    print("Goal met")
+                    break
+
+                self.log(self.epochs, grad, error)
 
     def _least_squares(self,
                        inputs: np.ndarray,
@@ -234,6 +294,101 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
         self.weights_a = lsq_model.coefficients
         self._training_log = lsq_model._training_log
+
+    def _levenberg_marquardt(self,
+                             inputs: np.ndarray,
+                             reference_outputs: np.ndarray,
+                             mu: float,
+                             alpha: Optional[float],
+                             **_):
+        """
+        Generator that performs one Levenberg-Marquardt step on each iteration.
+
+        ..note: Do not call this function directly. Use train(...) instead.
+
+        :param inputs: Must have shape (n_samples, n_input, 1).
+        :param reference_outputs: Outputs for each input. Must have shape (n_samples, n_output, 1)
+        :param eta: Damping parameter.
+        :param alpha: Adaptive factor. If None, then the damping parameter will not be adapted.
+        :yields: Absolute sum of the gradients on each iteration.
+        """
+        # Dimension sizes.
+        # s: n_samples
+        # i: n_input
+        # j: n_hidden
+        # k: n_output
+        # m: 1
+
+        # s1i
+        inputs = inputs.transpose((0, 2, 1))
+
+        last_error = None
+        while True:
+            # Evaluate network
+            # ================
+            # xi - cij
+            # sji = s1i - ji
+            vij = inputs - self.weights_c
+
+            # sji
+            yij = vij**2
+
+            # sj
+            zj = np.einsum("ji,sji->sj", self.weights_w ** 2, yij)
+
+            # sj
+            yj = np.exp(-zj)
+
+            # s
+            yk = np.einsum("j,sj->s", self.weights_a, yj)
+
+            # Calculate derivatives
+            # =====================
+            # sj
+            de_da = -yj
+
+            # Should be `aj @ yij @ exp(-zj)`, but since `yj = np.exp(-zj)`
+            # then we use `aj @ yij @ yj`
+            # sji
+            de_dwij = np.einsum("j,sji,sj->sji", self.weights_a, yij, yj)
+
+            # `aj @ wij @ vij @ exp(-zj) = aj @ wij @ vij @ vj`
+            # sji
+            de_dcij = -2 * np.einsum("j,ji,sji,sj->sji", self.weights_a, self.weights_w, vij, yj)
+
+            # s(i*j)
+            de_dwij = de_dwij.reshape((de_dwij.shape[0], -1))
+            de_dcij = de_dcij.reshape((de_dcij.shape[0], -1))
+
+            j = np.hstack((de_da, de_dwij, de_dcij))
+
+            # Calculate weights updates
+            # ========================
+            # s1
+            errors = np.sum(reference_outputs - yk.reshape((-1, 1, 1)), axis=1)
+            delta_weights = np.linalg.inv(j.T @ j + mu * np.eye(j.shape[1])) @ j.T @ errors
+
+            # Split weight updates and apply
+            delta_a = delta_weights[:self.n_hidden].squeeze()
+            delta_w = delta_weights[self.n_hidden:(self.n_hidden + self.n_hidden * self.n_inputs)]\
+                .reshape((self.n_hidden, self.n_inputs))
+            delta_c = delta_weights[(self.n_hidden + self.n_hidden * self.n_inputs):] \
+                .reshape((self.n_hidden, self.n_inputs))
+
+            self.weights_a -= delta_a
+            self.weights_w -= delta_w
+            self.weights_c -= delta_c
+
+            # Adapt mu
+            error = np.sum(np.abs(errors))
+            if last_error and alpha:
+                if error < last_error:
+                    mu *= alpha
+                else:
+                    mu /= alpha
+            last_error = error
+
+            yield np.sum(np.abs(de_da)) + np.sum(np.abs(de_dwij)) + np.sum(np.abs(de_dcij))
 
     def evaluate_error(self, inputs, reference_outputs):
         """
