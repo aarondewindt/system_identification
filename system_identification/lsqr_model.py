@@ -14,12 +14,12 @@ class LeastSquaresModel(BaseModel):
     activation_functions = None
     training_algorithm = "lstsqr"
 
-    def __init__(self, func, n_inputs, range, description):
+    def __init__(self, func, n_inputs, input_range, description):
         """
 
         :param func: Function used to calculate the rows of the rows of the A matrix.
         """
-        super().__init__(n_inputs, 1, range, description)
+        super().__init__(n_inputs, 1, input_range, description)
 
         self.func = func
         self.coefficients = None
@@ -27,18 +27,18 @@ class LeastSquaresModel(BaseModel):
     @classmethod
     def new_polynomial(cls,
                        n_inputs: int,
-                       range: np.array,
+                       input_range: np.array,
                        order: int):
         """
         Create new LeastSquaresModel based on a polynomial.
 
         :param n_inputs: Number of inputs.
-        :param range: Range of each input.
+        :param input_range: Range of each input.
         :param order: Polynomial order.
         :return:
         """
-        range = np.atleast_2d(range)
-        assert range.shape == (n_inputs, 2), "There must be one row in range per input."
+        input_range = np.atleast_2d(input_range)
+        assert input_range.shape == (n_inputs, 2), "There must be one row in range per input."
 
         # Function that calculates the terms of a multivariate power series with
         # all coefficients set to 1.
@@ -49,11 +49,11 @@ class LeastSquaresModel(BaseModel):
         # [1, 3, 9, 2, 6, 18, 4, 12, 36]
         def polynomial_func(inputs, n_inputs, order):
             return [np.prod([inp**exp for inp, exp in zip(inputs, exponentials)])
-                    for exponentials in product(*(range(order+1) for i in range(n_inputs)))]
+                    for exponentials in product(*(range(order + 1) for i in range(n_inputs)))]
 
         return cls(func=partial(polynomial_func, n_inputs=n_inputs, order=order),
                    n_inputs=n_inputs,
-                   range=range,
+                   input_range=input_range,
                    description=f"Least squares model fitting a `{order}` order polynomial.")
 
     def _repr_html_(self):
@@ -62,7 +62,7 @@ class LeastSquaresModel(BaseModel):
             "n_inputs": self.n_inputs,
             "n_output": self.n_outputs,
             "n_coefficients": self.coefficients.size if self.coefficients else self.coefficients,
-            "range": self.range
+            "range": self.input_range
         }).to_html()
 
     def evaluate(self, inputs: np.ndarray):
@@ -83,8 +83,8 @@ class LeastSquaresModel(BaseModel):
               goal: float = 0.,
               min_grad: float = 1e-10,
               train_log_freq: int = 1,
-              evaluation_inputs: Optional[np.ndarray] = None,
-              evaluation_reference_outputs: Optional[np.ndarray] = None,
+              validation_inputs: Optional[np.ndarray] = None,
+              validation_outputs: Optional[np.ndarray] = None,
               **_):
         """
         "Train" the polynomial coefficients using least squares. This functions and its parameters
@@ -97,15 +97,16 @@ class LeastSquaresModel(BaseModel):
         :param goal: Ignored.
         :param min_grad: Ignored.
         :param train_log_freq: Ignored.
-        :param evaluation_inputs: Optional evaluation input data. By default the training data is used.
-        :param evaluation_reference_outputs: Optional evaluation input data. By default the training data is used.
+        :param validation_inputs: Optional validation input data. By default the training data is used.
+        :param validation_outputs: Optional validation input data. By default the training data is used.
         """
 
-        assert (evaluation_inputs is None) == (evaluation_reference_outputs is None), \
+        assert (validation_inputs is None) == (validation_outputs is None), \
             "Both the evaluation inputs and reference outputs must be given or omitted."
 
-        evaluation_inputs = evaluation_inputs if evaluation_inputs is None else inputs
-        evaluation_reference_outputs = evaluation_reference_outputs if evaluation_reference_outputs is None else reference_outputs
+        # Backup data for error evaluation later on.
+        inputs_training = inputs
+        outputs_training = reference_outputs
 
         # Remove the last dimension.
         inputs = inputs[..., 0]
@@ -119,7 +120,18 @@ class LeastSquaresModel(BaseModel):
         self.coefficients = result.x
 
         self._training_log.clear()
-        self.log(1, np.nan, self.evaluate_error(evaluation_inputs, evaluation_reference_outputs))
+
+        self.log(
+            1,
+            np.nan,
+            *self.evaluate_errors(
+                inputs_training, outputs_training,
+                validation_inputs, validation_outputs
+            ),
+            {
+                "coefficients": self.coefficients
+            }
+        )
 
     def save_matlab(self):
         raise NotImplementedError()

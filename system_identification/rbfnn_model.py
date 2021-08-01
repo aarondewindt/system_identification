@@ -20,8 +20,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                  weights_a: np.ndarray,
                  weights_c: np.ndarray,
                  weights_w: np.ndarray,
-                 range: np.ndarray,
-                 log_dir: Union[Path, str],
+                 input_range: np.ndarray,
                  description: str):
         """
         Dense neural network with radial basis function activation in the hidden layer.
@@ -29,16 +28,16 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         ..note: Do not use this constructor to create new RadialBasisFunctionNeuralNetwork instances. Use the
                 RadialBasisFunctionNeuralNetwork.new_###(...) factory functions instead.
 
-        :param weights_0: (n_hidden x (n_input + 1)) matrix. Weights between the input and hidden layer.
-        :param weights_1: (n_output x (n_hidden + 1)) matrix. Weights between the hidden and output layer.
-        :param range: (n_input x 2) matrix with the range of each input in each row.
-        :param log_dir: Directory to store network training history.
+        :param weights_a: (n_hidden) vector. Amplitude of each RBF.
+        :param weights_c: (n_hidden x n_input) matrix. Centers of each RBF.
+        :param weights_w: (n_hidden x n_input) matrix. Width of each RBF.
+        :param input_range: (n_input x 2) matrix with the range of each input in each row.
         """
 
         super().__init__(
             n_inputs=weights_c.shape[1],
             n_outputs=1,
-            range=range,
+            input_range=input_range,
             description=description,
         )
 
@@ -46,15 +45,12 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         assert weights_w.shape[1] == self.n_inputs
         assert weights_w.shape[0] == weights_a.shape[0]
 
-        self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(exist_ok=True)
-
         self.weights_a = weights_a  #: RBF amplitudes
         self.weights_c = weights_c  #: RBF coordinates
         self.weights_w = weights_w  #: RBF widths
 
         self.n_hidden = weights_a.shape[0]  #: Number of RBF's
-        self.range = range  # Range of inputs.
+        self.range = input_range  # Range of inputs.
 
         self.epochs = 0
 
@@ -77,7 +73,6 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             "n_hidden": self.n_hidden,
             "n_output": self.n_outputs,
             "training_parameters": self.training_parameters,
-            "log_dir": self.log_dir,
             "weights": {
                 "weights_a": self.weights_a,
                 "weights_c": self.weights_c,
@@ -89,16 +84,13 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
     def new(cls,
             n_inputs: int,
             n_hidden: int,
-            input_range: Union[np.ndarray, Sequence[float]],
-            log_dir: Union[Path, str]):
+            input_range: Union[np.ndarray, Sequence[float]]):
         """
-        Factory function used to create new RadialBasisFunctionNeuralNetwork instances with random weights.
+        Factory function used to create new RadialBasisFunctionNeuralNetwork instances with random RBF's.
 
         :param n_inputs: Number of inputs
-        :param n_outputs: Number of outputs
-        :param n_hidden: Number of cells in the hidden layer.
+        :param n_hidden: Number of RBF's in the hidden layer.
         :param input_range: Range of each input.
-        :param log_dir: Directory to store network training history.
         :return: New RadialBasisFunctionNeuralNetwork instance.
         """
 
@@ -111,8 +103,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             weights_a=np.random.rand(n_hidden,),
             weights_c=np.random.rand(n_hidden, n_inputs),
             weights_w=np.random.rand(n_hidden, n_inputs),
-            range=input_range,
-            log_dir=log_dir,
+            input_range=input_range,
             description="Feedforward neural network with random initial weights."
         )
 
@@ -122,8 +113,18 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                              n_hidden: int,
                              rbf_width: float,
                              rbf_amplitude: float,
-                             input_range: Union[np.ndarray, Sequence[float]],
-                             log_dir: Union[Path, str]):
+                             input_range: Union[np.ndarray, Sequence[float]]):
+        """
+        Factory function used to create new RadialBasisFunctionNeuralNetwork
+        instances with randomly RBF's with the given amplitude and width.
+
+        :param n_inputs: Number of inputs
+        :param n_hidden: Number of RBF's in the hidden layer.
+        :param rbf_width: RBF's width.
+        :param rbf_amplitude: RBF's amplitude.
+        :param input_range: (n_input x 2) matrix with the range of each input in each row.
+        :return: New RadialBasisFunctionNeuralNetwork instance.
+        """
         input_range = np.atleast_2d(input_range)
         weights_c = np.hstack([np.random.uniform(*ir, (n_hidden, 1)) for ir in input_range])
 
@@ -131,8 +132,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             weights_a=np.ones((n_hidden,)) * rbf_amplitude,
             weights_c=weights_c,
             weights_w=np.ones((n_hidden, n_inputs)) * rbf_width,
-            range=input_range,
-            log_dir=log_dir,
+            input_range=input_range,
             description="Feedforward neural network with random initial weights."
         )
 
@@ -142,9 +142,18 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                            grid_size: Sequence[int],
                            input_range: Union[np.ndarray, Sequence[float]],
                            rbf_width: float,
-                           rbf_amplitude: float,
-                           log_dir: Union[Path, str],
-                           description: Optional[str]= None):
+                           rbf_amplitude: float):
+        """
+        Factory function used to create new RadialBasisFunctionNeuralNetwork
+        instances with RBF's on a uniform grid with the given amplitude and width.
+
+        :param n_inputs: Number of inputs
+        :param grid_size: (n_input) vector with the number of RBF's per input on the grid.
+        :param input_range: (n_input x 2) matrix with the range of each input in each row.
+        :param rbf_width: RBF's width.
+        :param rbf_amplitude: RBF's amplitude.
+        :return:
+        """
 
         # Make sure we have one min/max range for each input.
         input_range = np.atleast_2d(input_range)
@@ -168,10 +177,9 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             weights_a=np.ones((n_hidden,)) * rbf_amplitude,
             weights_c=weights_c,
             weights_w=np.ones((n_hidden, n_inputs)) * rbf_width,
-            range=input_range,
-            log_dir=log_dir,
-            description=description or "Radial basis function neural network with "
-                                       "the initial centers placed in a uniform grid."
+            input_range=input_range,
+            description="Radial basis function neural network with "
+                        "the initial centers placed in a uniform grid."
         )
 
     def evaluate(self, inputs: np.ndarray):
@@ -201,8 +209,8 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
               goal: float=0.,
               min_grad: float=1e-10,
               train_log_freq: int=1,
-              evaluation_inputs: Optional[np.ndarray]=None,
-              evaluation_reference_outputs: Optional[np.ndarray]=None,
+              validation_inputs: Optional[np.ndarray]=None,
+              validation_outputs: Optional[np.ndarray]=None,
               **kwargs):
         """
         Train feedforward neural network.
@@ -216,20 +224,20 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         :param min_grad: Minimum gradient. The training will stop once the absolute sum gradients is below
                          this value.
         :param train_log_freq: Number of epochs between error evaluation and logging steps.
-        :param evaluation_inputs: Optional evaluation input data. By default the training data is used.
-        :param evaluation_reference_outputs: Optional evaluation input data. By default the training data is used.
+        :param validation_inputs: Optional evaluation input data. By default the training data is used.
+        :param validation_outputs: Optional evaluation input data. By default the training data is used.
         :param kwargs: Extra parameters passed to the training algorithm functions.
                        trainlm` accepts `mu` and `alpha`. `alpha` may be set to `None` to make it non-adaptive.
         """
 
-        assert (evaluation_inputs is None) == (evaluation_reference_outputs is None), \
+        assert (validation_inputs is None) == (validation_outputs is None), \
             "Both the evaluation inputs and reference outputs must be given or omitted."
 
-        evaluation_inputs = evaluation_inputs or inputs
-        evaluation_reference_outputs = evaluation_reference_outputs or reference_outputs
+        validation_inputs = validation_inputs or inputs
+        validation_outputs = validation_outputs or reference_outputs
 
         if method == "trainlsqr":
-            self._least_squares(inputs, reference_outputs, evaluation_inputs, evaluation_reference_outputs)
+            self._least_squares(inputs, reference_outputs, validation_inputs, validation_outputs)
             return
 
         elif method == "trainlm":
@@ -258,12 +266,24 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                 break
 
             if not (i % train_log_freq):
-                error = self.evaluate_error(evaluation_inputs, evaluation_reference_outputs)
-                if error < self.training_parameters["goal"]:
+                training_data_errors, validation_data_errors = \
+                    self.evaluate_errors(inputs, reference_outputs, validation_inputs, validation_outputs)
+
+                error_mean = np.mean(abs(training_data_errors))
+                if error_mean < self.training_parameters["goal"]:
                     print("Goal met")
                     break
 
-                self.log(self.epochs, grad, error)
+                self.log(
+                    self.epochs,
+                    grad,
+                    training_data_errors, validation_data_errors,
+                    {
+                        "weights_a": self.weights_a,
+                        "weights_c": self.weights_c,
+                        "weights_w": self.weights_w,
+                    }
+                )
 
     def _least_squares(self,
                        inputs: np.ndarray,
@@ -278,22 +298,21 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         lsq_model = LeastSquaresModel(
             func=rbf_func,
             n_inputs=self.n_inputs,
-            range=self.range,
+            input_range=self.range,
             description="",
         )
 
         lsq_model.train(
             inputs=inputs,
             reference_outputs=reference_outputs,
-            evaluation_inputs=evaluation_inputs,
-            evaluation_reference_outputs=evaluation_reference_outputs,
+            validation_inputs=evaluation_inputs,
+            validation_outputs=evaluation_reference_outputs,
         )
 
         # Sanity check
         assert lsq_model.coefficients.shape == self.weights_a.shape
 
         self.weights_a = lsq_model.coefficients
-        self._training_log = lsq_model._training_log
 
     def _levenberg_marquardt(self,
                              inputs: np.ndarray,
@@ -389,25 +408,6 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             last_error = error
 
             yield np.sum(np.abs(de_da)) + np.sum(np.abs(de_dwij)) + np.sum(np.abs(de_dcij))
-
-    def evaluate_error(self, inputs, reference_outputs):
-        """
-        Evaluated the neural network and calculates the absolute sum of the errors.
-
-        :param inputs: Must have shape (n_samples, n_inputs, 1).
-        :param reference_outputs: Must have shape (n_samples, n_outputs, 1). Expected ouputs
-                                  for the inputs.
-        :return: Absolute sum of the errors.
-        """
-        return np.sum(np.abs(reference_outputs - self.evaluate(inputs))) / inputs.shape[0]
-
-    @property
-    def training_log(self):
-        """
-        `xarray.Dataset` of the training log.
-        :return:
-        """
-        return pd.DataFrame([asdict(log_entry) for log_entry in self._training_log])
 
     def save_matlab(self):
         """

@@ -17,8 +17,7 @@ class FeedForwardNeuralNetwork(BaseModel):
     def __init__(self,
                  weights_0: np.ndarray,
                  weights_1: np.ndarray,
-                 range: np.ndarray,
-                 log_dir: Union[Path, str],
+                 input_range: np.ndarray,
                  description: str):
         """
         Dense feedforward neural network.
@@ -28,27 +27,24 @@ class FeedForwardNeuralNetwork(BaseModel):
 
         :param weights_0: (n_hidden x (n_input + 1)) matrix. Weights between the input and hidden layer.
         :param weights_1: (n_output x (n_hidden + 1)) matrix. Weights between the hidden and output layer.
-        :param range: (n_input x 2) matrix with the range of each input in each row.
+        :param input_range: (n_input x 2) matrix with the range of each input in each row.
         :param log_dir: Directory to store network training history.
         """
 
         super().__init__(
             n_inputs=weights_0.shape[1] - 1,
             n_outputs=weights_1.shape[0],
-            range=range,
+            input_range=input_range,
             description=description,
         )
 
         assert weights_0.shape[0] == (weights_1.shape[1] - 1)
 
-        self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(exist_ok=True)
-
         self.weights_0 = weights_0  #: Input weights, including bias weights on in the first column.
         self.weights_1 = weights_1  #: Outputs weights, including bias weights on in the first column.
 
         self.n_hidden = weights_0.shape[0]
-        self.range = range
+        self.range = input_range
 
         self.epochs = 0
 
@@ -76,7 +72,6 @@ class FeedForwardNeuralNetwork(BaseModel):
             "output_weights": self.output_weights,
             "bias_weights": [self.bias_weights_0, self.bias_weights_1],
             "training_parameters": self.training_parameters,
-            "log_dir": self.log_dir,
         }).to_html()
 
     @property
@@ -100,27 +95,25 @@ class FeedForwardNeuralNetwork(BaseModel):
             n_inputs: int,
             n_outputs: int,
             n_hidden: int,
-            range: Union[np.ndarray, Sequence[float]],
-            log_dir: Union[Path, str]):
+            input_range: Union[np.ndarray, Sequence[float]]):
         """
         Factory function used to create new FeedForwardNeuralNetwork instances.
 
         :param n_inputs: Number of inputs
         :param n_outputs: Number of outputs
         :param n_hidden: Number of cells in the hidden layer.
-        :param range: Range of each input.
+        :param input_range: Range of each input.
         :param log_dir: Directory to store network training history.
         :return: New FeedForwardNeuralNetwork instance.
         """
 
-        range = np.atleast_2d(range)
-        assert range.shape == (n_inputs, 2), "There must be one row in range per input."
+        input_range = np.atleast_2d(input_range)
+        assert input_range.shape == (n_inputs, 2), "There must be one row in range per input."
 
         return cls(
             weights_0=np.random.rand(n_hidden, n_inputs + 1),
             weights_1=np.random.rand(n_outputs, n_hidden + 1),
-            range=range,
-            log_dir=log_dir,
+            input_range=input_range,
             description="Feedforward neural network with random initial weights."
         )
 
@@ -149,8 +142,8 @@ class FeedForwardNeuralNetwork(BaseModel):
               goal: float=0.,
               min_grad: float=1e-10,
               train_log_freq: int=1,
-              evaluation_inputs: Optional[np.ndarray]=None,
-              evaluation_reference_outputs: Optional[np.ndarray]=None,
+              validation_inputs: Optional[np.ndarray]=None,
+              validation_outputs: Optional[np.ndarray]=None,
               **kwargs):
         """
         Train feedforward neural network.
@@ -164,18 +157,19 @@ class FeedForwardNeuralNetwork(BaseModel):
         :param min_grad: Minimum gradient. The training will stop once the absolute sum gradients is below
                          this value.
         :param train_log_freq: Number of epochs between error evaluation and logging steps.
-        :param evaluation_inputs: Optional evaluation input data. By default the training data is used.
-        :param evaluation_reference_outputs: Optional evaluation input data. By default the training data is used.
+        :param validation_inputs: Optional evaluation input data. By default the training data is used.
+        :param validation_outputs: Optional evaluation input data. By default the training data is used.
         :param kwargs: Extra parameters passed to the training algorith functions.
                        Both accept `alpha`. `trainbp` accepts `eta` and `trainlm` accepts `mu`. `alpha` may be
                        set to `None` to make it non-adaptive.
         """
 
-        assert (evaluation_inputs is None) == (evaluation_reference_outputs is None), \
+        assert (validation_inputs is None) == (validation_outputs is None), \
             "Both the evaluation inputs and reference outputs must be given or omitted."
 
-        evaluation_inputs = inputs if evaluation_inputs is None else evaluation_inputs
-        evaluation_reference_outputs = reference_outputs if evaluation_reference_outputs is None else evaluation_reference_outputs
+        # Backup data for error evaluation later on.
+        inputs_training = inputs
+        outputs_training = reference_outputs
 
         inputs = np.insert(inputs, 0, 1, 1)
 
@@ -216,12 +210,23 @@ class FeedForwardNeuralNetwork(BaseModel):
                 break
 
             if not (i % train_log_freq):
-                error = self.evaluate_error(evaluation_inputs, evaluation_reference_outputs)
-                if error < self.training_parameters["goal"]:
+                training_data_errors, validation_data_errors = \
+                    self.evaluate_errors(inputs_training, outputs_training, validation_inputs, validation_outputs)
+
+                error_mean = np.mean(abs(training_data_errors))
+                if error_mean < self.training_parameters["goal"]:
                     print("Goal met")
                     break
 
-                self.log(self.epochs, grad, error)
+                self.log(
+                    self.epochs,
+                    grad,
+                    training_data_errors, validation_data_errors,
+                    {
+                        "weights_0": self.weights_0,
+                        "weights_1": self.weights_1,
+                    }
+                )
 
     def _back_propagation(self,
                           inputs: np.ndarray,
@@ -375,25 +380,6 @@ class FeedForwardNeuralNetwork(BaseModel):
             last_error = error
 
             yield np.sum(np.abs(derror_dweights_0)) + np.sum(np.abs(derror_dweights_1))
-
-    def evaluate_error(self, inputs, reference_outputs):
-        """
-        Evaluated the neural network and calculates the absolute sum of the errors.
-
-        :param inputs: Must have shape (n_samples, n_inputs, 1).
-        :param reference_outputs: Must have shape (n_samples, n_outputs, 1). Expected ouputs
-                                  for the inputs.
-        :return: Absolute sum of the errors.
-        """
-        return np.sum(np.abs(reference_outputs - self.evaluate(inputs))) / inputs.shape[0]
-
-    @property
-    def training_log(self):
-        """
-        `xarray.Dataset` of the training log.
-        :return:
-        """
-        return pd.DataFrame([asdict(log_entry) for log_entry in self._training_log])
 
     def save_matlab(self):
         """
