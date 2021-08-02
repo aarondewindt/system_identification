@@ -158,6 +158,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         # Make sure we have one min/max range for each input.
         input_range = np.atleast_2d(input_range)
         assert input_range.shape == (n_inputs, 2)
+        assert len(grid_size) == n_inputs
 
         # List containing vectors with the grid coordinates.
         # Eg. Assume 2 inputs, a (2x3) grid size and inputs range [(1, 4), (-1, 1)]
@@ -233,8 +234,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         assert (validation_inputs is None) == (validation_outputs is None), \
             "Both the evaluation inputs and reference outputs must be given or omitted."
 
-        validation_inputs = validation_inputs or inputs
-        validation_outputs = validation_outputs or reference_outputs
+        self._training_log.clear()
 
         if method == "trainlsqr":
             self._least_squares(inputs, reference_outputs, validation_inputs, validation_outputs)
@@ -313,6 +313,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         assert lsq_model.coefficients.shape == self.weights_a.shape
 
         self.weights_a = lsq_model.coefficients
+        self._training_log = lsq_model._training_log
 
     def _levenberg_marquardt(self,
                              inputs: np.ndarray,
