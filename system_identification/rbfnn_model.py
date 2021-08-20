@@ -1,11 +1,9 @@
-from typing import Union, Sequence, Optional
-from dataclasses import asdict
-from pathlib import Path
+from typing import Union, Sequence, Optional, Tuple
 from itertools import product
 
 from tqdm.auto import trange
 import numpy as np
-import pandas as pd
+import xarray as xr
 
 from .base_model import BaseModel
 from .utils.vdom import hyr
@@ -111,8 +109,8 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
     def new_random_placement(cls,
                              n_inputs: int,
                              n_hidden: int,
-                             rbf_width: float,
-                             rbf_amplitude: float,
+                             width_range: Tuple[float, float],
+                             amplitude_range: Tuple[float, float],
                              input_range: Union[np.ndarray, Sequence[float]]):
         """
         Factory function used to create new RadialBasisFunctionNeuralNetwork
@@ -120,18 +118,26 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
         :param n_inputs: Number of inputs
         :param n_hidden: Number of RBF's in the hidden layer.
-        :param rbf_width: RBF's width.
-        :param rbf_amplitude: RBF's amplitude.
+        :param width_range: RBF's width.
+        :param amplitude_range: RBF's amplitude.
         :param input_range: (n_input x 2) matrix with the range of each input in each row.
         :return: New RadialBasisFunctionNeuralNetwork instance.
         """
         input_range = np.atleast_2d(input_range)
+
+        # Generate vector of random amplitudes within range
+        weights_a = np.random.uniform(*amplitude_range, (n_hidden,))
+
+        # Generate random coordinates within the given inputs range.
         weights_c = np.hstack([np.random.uniform(*ir, (n_hidden, 1)) for ir in input_range])
 
+        # Generate random RBF widths within the given range.
+        weights_w = np.random.uniform(*width_range, (n_hidden, n_inputs))
+
         return cls(
-            weights_a=np.ones((n_hidden,)) * rbf_amplitude,
+            weights_a=weights_a,
             weights_c=weights_c,
-            weights_w=np.ones((n_hidden, n_inputs)) * rbf_width,
+            weights_w=weights_w,
             input_range=input_range,
             description="Feedforward neural network with random initial weights."
         )
@@ -182,6 +188,50 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             description="Radial basis function neural network with "
                         "the initial centers placed in a uniform grid."
         )
+
+    @classmethod
+    def new_from_other_at_epoch(cls, other: "RadialBasisFunctionNeuralNetworkModel", epoch=None) \
+            -> "RadialBasisFunctionNeuralNetworkModel":
+        if epoch is None:
+            training_log = other._training_log
+        else:
+            training_log = [log for log in other._training_log if log.epoch <= epoch]
+
+        print(len(training_log))
+
+        model = cls(
+            weights_a=training_log[-1].weights['weights_a'],
+            weights_c=training_log[-1].weights['weights_c'],
+            weights_w=training_log[-1].weights['weights_w'],
+            input_range=other.input_range,
+            description="",
+        )
+
+        model._training_log = training_log
+
+        return model
+
+    @classmethod
+    def new_from_training_log(cls, training_log: xr.Dataset, input_range=None):
+        weights_c = training_log.isel(epoch=-1).weights_c
+
+        if input_range is None:
+            n_inputs = weights_c.shape[1]
+            input_range = np.array([[-np.inf, np.inf] for _ in range(n_inputs)])
+
+        return cls(
+            weights_a=training_log.isel(epoch=-1).weights_a,
+            weights_c=training_log.isel(epoch=-1).weights_c,
+            weights_w=training_log.isel(epoch=-1).weights_w,
+            input_range=input_range,
+            description="",
+        )
+
+    # def __getstate__(self):
+    #     pass
+    #
+    # def __setstate__(self, state):
+    #     pass
 
     def evaluate(self, inputs: np.ndarray):
         """
@@ -279,9 +329,9 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                     grad,
                     training_data_errors, validation_data_errors,
                     {
-                        "weights_a": self.weights_a,
-                        "weights_c": self.weights_c,
-                        "weights_w": self.weights_w,
+                        "weights_a": self.weights_a.copy(),
+                        "weights_c": self.weights_c.copy(),
+                        "weights_w": self.weights_w.copy(),
                     }
                 )
 
@@ -290,7 +340,8 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                        reference_outputs: np.ndarray,
                        evaluation_inputs: np.ndarray,
                        evaluation_reference_outputs: np.ndarray):
-        def rbf_func(inp):
+        def rbf_func(*args):
+            inp = np.array(args)
             vj = np.einsum("ji,ji->j", self.weights_w**2, (inp - self.weights_c)**2)
             return self.weights_a * np.exp(-vj)
 
@@ -343,6 +394,10 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         inputs = inputs.transpose((0, 2, 1))
 
         last_error = None
+
+        # Infinite loop. This is a generator that will indefinitely update the
+        # weights on each iteration. The train(...) function handles the end
+        # conditions.
         while True:
             # Evaluate network
             # ================
@@ -408,6 +463,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                     mu /= alpha
             last_error = error
 
+            # Yield gradient absolute sum to let the train(...) function log and check for end conditions.
             yield np.sum(np.abs(de_da)) + np.sum(np.abs(de_dwij)) + np.sum(np.abs(de_dcij))
 
     def save_matlab(self):

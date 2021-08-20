@@ -115,7 +115,8 @@ class BaseModel(ABC):
         # to get names for the unnamed dimensions.
         names = iter("ijklmnopqrstuvwxyz")
 
-        return xr.Dataset(
+        # Create dataset
+        dataset = xr.Dataset(
             data_vars={
                 "gradient": (("epoch",), gradient,),
                 "error_training_data": (("epoch", next(names)), np.array(error_training_data)[..., 0, 0],),
@@ -135,6 +136,17 @@ class BaseModel(ABC):
             },
             coords={"epoch": epoch},
         )
+
+        # Find best epoch
+        # Index of the epoch with the smallest mean residual.
+        min_mean_residual_idx = abs(dataset.error_validation_data).mean("j").argmin()
+        min_jb_idx = dataset.error_validation_jb.argmin()
+
+        # Add best epochs to dataset.
+        dataset['min_residual_epoch'] = dataset.epoch[min_mean_residual_idx].item()
+        dataset['min_jb_epoch'] = dataset.epoch[min_jb_idx].item()
+
+        return dataset
 
     @abstractmethod
     def save_matlab(self):
