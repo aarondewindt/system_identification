@@ -66,7 +66,7 @@ jupyter-lsp==1.4.0
 jupyter-server==1.10.1
 jupyter-telemetry==0.1.0
 jupyterhub==1.4.1
-jupyterlab==3.0.16
+jupyterlab==3.0.17
 jupyterlab-lsp==3.8.0
 jupyterlab-pygments==0.1.2
 jupyterlab-server==2.6.1
