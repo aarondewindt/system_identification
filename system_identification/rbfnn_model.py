@@ -8,6 +8,7 @@ import xarray as xr
 from .base_model import BaseModel
 from .utils.vdom import hyr
 from .lsqr_model import LeastSquaresModel
+from .utils.lloyds_algorithm import LloydsAlgorithm
 
 
 class RadialBasisFunctionNeuralNetworkModel(BaseModel):
@@ -188,6 +189,42 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
             description="Radial basis function neural network with "
                         "the initial centers placed in a uniform grid."
         )
+
+    @classmethod
+    def new_centroidal_voronoi_tessellation_placement(cls,
+                                           n_hidden: int,
+                                           input_range: Union[np.ndarray, Sequence[float]],
+                                           width_range: Tuple[float, float],
+                                           amplitude_range: Tuple[float, float],
+                                           iterations: int=15):
+        """
+        Factory function used to create new RadialBasisFunctionNeuralNetwork
+        instances with RBF's placed on the centroids of the elements in an
+        approximate centroidal Voronoi tessellation.
+
+        note: Only 2 inputs supported.
+
+        :param n: Number of RBF's
+        :param bounding_box:
+        :param iterations:
+        :return:
+        """
+        n_inputs = 2
+        assert len(input_range) == n_inputs, "Only 2 inputs supported."
+
+        field = LloydsAlgorithm(n_hidden, (*input_range[0], *input_range[1]))
+        field.relax_points(iterations)
+        weights_c = field.points_as_array
+
+        return cls(
+            weights_a=np.random.rand(n_hidden,),
+            weights_c=weights_c,
+            weights_w=np.random.rand(n_hidden, n_inputs),
+            input_range=input_range,
+            description="Radial basis function neural network with "
+                        "the initial centers placed a centroidal Voronoi tessellation."
+        )
+
 
     @classmethod
     def new_from_other_at_epoch(cls, other: "RadialBasisFunctionNeuralNetworkModel", epoch=None) \

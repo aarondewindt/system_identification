@@ -3,7 +3,7 @@ from typing import Tuple, Sequence
 from itertools import chain
 
 import numpy as np
-from shapely.geometry import Point, Polygon, LineString
+from shapely.geometry import Point, Polygon, LineString, MultiPoint, box
 from shapely.ops import polygonize
 from shapely.affinity import scale
 from scipy.spatial import Voronoi
@@ -12,8 +12,9 @@ from scipy.spatial import Voronoi
 class LloydsAlgorithm:
     def __init__(self, n: int, bounding_box: Tuple[float, float, float, float]):
         """
-        Uses Lloyd's algorithm to generate a field of approximately uniformal distributed
-        points.
+        Uses Lloyd's algorithm to approximate a centroidal Voronoi tessellation
+        with n points. This results in points that are approximatly evenly distributed
+        throughout the bounding box.
 
         References:
          [1] https://github.com/mapsense/bounded-voronoi-demo/blob/master/voronoi.py
@@ -24,8 +25,6 @@ class LloydsAlgorithm:
         """
         self.voronoi = None
         self.regions: Sequence[Polygon] = None
-
-        assert n >= 4, "At least 4 points are required"
 
         self.bounding_box = Polygon([
             [bounding_box[0], bounding_box[2]],
@@ -65,6 +64,17 @@ class LloydsAlgorithm:
         Current and extra points as a (n_points x 2) Numpy array.
         """
         return np.vstack([[point.x, point.y] for point in chain(self.points, self.extra_points)])
+
+    @property
+    def error(self):
+        """
+        The normalized sums of distance between the points and the current region centroids.
+        """
+        error = 0
+        region_centroids = MultiPoint([region.centroid for region in self.regions])
+        for point in self.points:
+            error += point.distance(region_centroids)
+        return error / len(self.points)
 
     def build_voronoi(self) -> None:
         """
