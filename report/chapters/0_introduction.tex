@@ -1,0 +1,29 @@
+\section{Introduction}
+Accurate simulation models are essential when developing aircraft avionics systems or pilot training simulators. Without an accurate model it is impossible to guarantee the controllers will be stable or pilots may be trained to expect an unrealistic behavior from the aircraft.
+
+It is possible to create models of an aircraft by only using the CAD designs, CFD simulations, wind tunnel data, etc. However these models based on only theoretical calculations or small scale testing may not fully represent the system and need to be validated and corrected using real full scale test data. 
+
+This is where system identification comes in, the process of creating mathematical models of a dynamic system by using statistical methods on real measured data. As these models are based on real data and not a theoretical representation of the aircraft, they can most accurately represent the real behavior if the identification process is applied correctly.
+
+\subsection{State estimation}
+Measured data will always have some errors and it may be impossible to directly measure one or more states of a dynamic system. With state estimation the goal is to correct for any errors in the measurements and estimate the value of any missing states. 
+
+A common type of error is random white noise. It can be reduced by applying a low pass filter on the data, ideally with both a forward and backwards pass to minimize the phase shift added by the filtering process. This method is simple, but its functionality is limited. It doesn't take into the dynamics of the system, it can't correct for bias, and only filters out high frequency noise.
+
+A more advanced family of state estimation methods are Kalman Filters (KF). These methods make use of the dynamics and sensors models of the system with some knowledge of the system and measurements noise to estimate the value of the states and co-variance matrix through time.
+
+The most basic variant is the Linear Kalman Filter (LKF). It makes use of the state space representation of the system to model the dynamics and sensors. Since this variant is based on only linear calculations it is possible to prove the stability of an implementation and guarantee it's convergence. However most real world systems are not linear, thus making this assumption may result in inaccurate estimates or prevent the filter to converge.
+
+The Extended Kalman Filter (EKF) solves this problem by linearizing the system on each iteration using the Jacobians of the non-linear models. This allows the EKF to use the same methods as the LKF once the linearizations are available. The problem with this method is that the stability and convergence of the filter cannot be guaranteed and it may take significantly longer for the filter to converge. To solve the convergence issue an Iterated Extended Kalman Filter (IEKF) performs multiple linearization and estimation steps per iteration. This lets the filter better handle the non-linearities in the system, with main drawback being the extra computational resources needed.
+
+Since it may take a significant amount of time for an (I)EKF to converge, the first few seconds may result in useless estimates. To solve this issue a Rauch-Tung-Striebel (RTS) smoother may be used. This consists of first running a KF forwards in time while recording the estimated states and co-variances, and then run a similar process backwards in time. This method not only yields better states estimates, but it also corrects the errors in the estimates before the original KF converged.
+
+\subsection{Parameter estimation}
+Every model consists of a set of tunable parameters that can be optimized to better match the system being modeled by minimizing a given cost function. This process is known as parameter estimation. Just as with state estimation there are many methods available to accomplish this task, each better suited for a different model structure, available data, available computational resources, etc. 
+
+One of the simplest methods is to use Ordinary Least Squares (OLS) to estimate the parameters. A solution can pretty much always be guaranteed, and it doesn't require long training times. The drawback is that the model function must be linear-in-the-parameters and it cannot handle correlations between parameters. To Weighted Least Squares (WLS) and Generalized Least Squares (GLS) extend OLS by allowing the addition of prior knowledge on the reliability of the samples and correlations between residuals.
+
+Least Squares based methods require some prior knowledge on the model structure and for it to be linear-in-the-parameters. This is not always possible, so whenever this is the case more complex model structures and estimation methods are needed. Two popular choices are neural networks and multivariate splines, each with their own advantage and disadvantages.
+
+
+

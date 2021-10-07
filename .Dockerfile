@@ -1,4 +1,4 @@
-FROM jupyter/scipy-notebook
+FROM jupyter/scipy-notebook:lab-3.1.13
 
 ## Define environment variables
 ENV PROJECT_NAME=system_identification
@@ -43,4 +43,4 @@ USER $NB_UID
 WORKDIR $HOME
 
 # Install project as developer
-RUN pip install -e $PROJECT_DIR
+RUN pip install -e $PROJECT_DIR --user
