@@ -77,7 +77,7 @@ lazy-object-proxy==1.6.0
 lckr-jupyterlab-variableinspector==3.0.9
 llvmlite==0.36.0
 locket==0.2.0
-Mako==1.1.4
+Mako==1.2.2
 mamba==0.15.2
 MarkupSafe==2.0.1
 matplotlib==3.4.2
