@@ -99,7 +99,7 @@ notebook==6.4.0
 numba==0.53.1
 numexpr==2.7.3
 numpy==1.21.1
-oauthlib==3.1.1
+oauthlib==3.2.1
 olefile==0.46
 packaging==21.0
 pamela==1.0.0
