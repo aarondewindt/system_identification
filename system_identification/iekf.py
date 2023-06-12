@@ -35,7 +35,7 @@ class IteratedExtendedKalmanFilter:
                  h: sp.Matrix,
                  hx: Optional[sp.Matrix] = None,
                  g: sp.Matrix,
-                 max_iterations: Optional[int]=100,
+                 max_iterations: int=100,
                  eps: Optional[float]=1e-10):
         # Check inputs
         assert max_iterations >= 1

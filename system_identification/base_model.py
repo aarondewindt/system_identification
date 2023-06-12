@@ -139,12 +139,19 @@ class BaseModel(ABC):
 
         # Find best epoch
         # Index of the epoch with the smallest mean residual.
-        min_mean_residual_idx = abs(dataset.error_validation_data).mean("j").argmin()
-        min_jb_idx = dataset.error_validation_jb.argmin()
-
         # Add best epochs to dataset.
-        dataset['min_residual_epoch'] = dataset.epoch[min_mean_residual_idx].item()
-        dataset['min_jb_epoch'] = dataset.epoch[min_jb_idx].item()
+
+        if np.isnan(dataset.error_validation_data).all():
+            dataset['min_residual_epoch'] = np.nan
+        else:
+            min_mean_residual_idx = abs(dataset.error_validation_data).mean("j").argmin()
+            dataset['min_residual_epoch'] = dataset.epoch[min_mean_residual_idx].item()
+
+        if np.isnan(dataset.error_validation_data).all():
+            dataset['min_jb_epoch'] = np.nan
+        else:
+            min_jb_idx = dataset.error_validation_jb.argmin()
+            dataset['min_jb_epoch'] = dataset.epoch[min_jb_idx].item()
 
         return dataset
 
