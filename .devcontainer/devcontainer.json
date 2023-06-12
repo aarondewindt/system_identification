@@ -13,9 +13,13 @@
 			"extensions": [
 				"ms-toolsai.jupyter",
 				"ms-python.python",
-				"ms-toolsai.jupyter-renderers"
+				"ms-toolsai.jupyter-renderers",
+				"James-Yu.latex-workshop"
 			]
 		}
+	},
+	"containerEnv": {
+		"GRANT_SUDO": "yes"
 	}
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
