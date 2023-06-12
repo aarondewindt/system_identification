@@ -1,4 +1,4 @@
-FROM jupyter/scipy-notebook:latest
+FROM jupyter/scipy-notebook:9e3ab9075a5e
 
 # Install system dependencies
 USER root
