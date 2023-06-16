@@ -225,10 +225,13 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                         "the initial centers placed a centroidal Voronoi tessellation."
         )
 
-
     @classmethod
     def new_from_other_at_epoch(cls, other: "RadialBasisFunctionNeuralNetworkModel", epoch=None) \
             -> "RadialBasisFunctionNeuralNetworkModel":
+        """
+        Create a new RadialBasisFunctionNeuralNetworkModel instance using the 
+        weights from another RadialBasisFunctionNeuralNetworkModel at the specified epoch.
+        """
         if epoch is None:
             training_log = other._training_log
         else:
@@ -249,19 +252,35 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         return model
 
     @classmethod
-    def new_from_training_log(cls, training_log: xr.Dataset, input_range=None):
-        weights_c = training_log.isel(epoch=-1).weights_c
+    def new_from_training_log(cls, training_log: xr.Dataset, input_range=None, epoch: int=-1):
+        """
+        Create a new RadialBasisFunctionNeuralNetworkModel instance using the
+        weights in a model training log at the specified epoch.
+
+        :param epoch: Epoch from which to copy the model weights. By default it'll be
+                      the last epoch.
+        """
+        weights_c = training_log.isel(epoch=epoch).weights_c
 
         if input_range is None:
             n_inputs = weights_c.shape[1]
             input_range = np.array([[-np.inf, np.inf] for _ in range(n_inputs)])
 
         return cls(
-            weights_a=training_log.isel(epoch=-1).weights_a,
-            weights_c=training_log.isel(epoch=-1).weights_c,
-            weights_w=training_log.isel(epoch=-1).weights_w,
+            weights_a=training_log.isel(epoch=epoch).weights_a,
+            weights_c=training_log.isel(epoch=epoch).weights_c,
+            weights_w=training_log.isel(epoch=epoch).weights_w,
             input_range=input_range,
             description="",
+        )
+
+    def clone_clean(self) -> 'RadialBasisFunctionNeuralNetworkModel':
+        return RadialBasisFunctionNeuralNetworkModel(
+            weights_a=self.weights_a,
+            weights_c=self.weights_c,
+            weights_w=self.weights_w,
+            input_range=self.input_range,
+            description=self.description,
         )
 
     # def __getstate__(self):
@@ -272,12 +291,15 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
     def evaluate(self, inputs: np.ndarray):
         """
+        Evaluate model using the given inputs.
+
         Shape of input must be: (n_samples, n_inputs, 1).
         Output shape will be: (n_samples, n_outputs, 1).
 
         :param inputs: Inputs to evaluate.
         :return:
         """
+
         # Transpose inputs so it has shape (n_samples, 1, n_inputs)
         # This is to make sure the centers can be properly broadcasted
         # during the following computation.
@@ -299,6 +321,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
               train_log_freq: int=1,
               validation_inputs: Optional[np.ndarray]=None,
               validation_outputs: Optional[np.ndarray]=None,
+              verbose=True,
               **kwargs):
         """
         Train feedforward neural network.
@@ -323,6 +346,12 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
         self._training_log.clear()
 
+        self.training_parameters["training_algorithm"] = method
+        self.training_parameters["goal"] = goal
+        self.training_parameters["min_grad"] = min_grad
+        self.training_parameters["epochs"] = epochs
+        self.training_parameters.update(kwargs)
+
         if method == "trainlsqr":
             self._least_squares(inputs, reference_outputs, validation_inputs, validation_outputs)
             return
@@ -335,13 +364,9 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         else:
             raise ValueError(f"Unknown training method {method}.")
 
-        self.training_parameters["training_algorithm"] = method
-        self.training_parameters["goal"] = goal
-        self.training_parameters["min_grad"] = min_grad
-        self.training_parameters["epochs"] = epochs
-        self.training_parameters.update(kwargs)
 
-        for i, grad in zip(trange(epochs - self.epochs), train_function(inputs, reference_outputs, **kwargs)):
+
+        for i, grad in zip(trange(epochs - self.epochs, disable=not verbose), train_function(inputs, reference_outputs, **kwargs)):
             if self.epochs >= epochs:
                 print("Max number of epochs reached")
                 break
@@ -380,7 +405,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         def rbf_func(*args):
             inp = np.array(args)
             vj = np.einsum("ji,ji->j", self.weights_w**2, (inp - self.weights_c)**2)
-            return self.weights_a * np.exp(-vj)
+            return np.exp(-vj)
 
         # Use the least squared model to solve this.
         lsq_model = LeastSquaresModel(
@@ -416,7 +441,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
         :param inputs: Must have shape (n_samples, n_input, 1).
         :param reference_outputs: Outputs for each input. Must have shape (n_samples, n_output, 1)
-        :param eta: Damping parameter.
+        :param mu: Damping parameter.
         :param alpha: Adaptive factor. If None, then the damping parameter will not be adapted.
         :yields: Absolute sum of the gradients on each iteration.
         """

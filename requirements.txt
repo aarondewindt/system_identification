@@ -9,3 +9,9 @@ statsmodels==0.14.0
 sympy==1.12
 tqdm==4.65.0
 xarray==2023.5.0
+autopep8
+yapf
+flake8
+pycodestyle
+pydocstyle
+pylint
