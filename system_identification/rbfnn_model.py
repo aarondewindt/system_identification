@@ -148,8 +148,8 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
                            n_inputs: int,
                            grid_size: Sequence[int],
                            input_range: Union[np.ndarray, Sequence[float]],
-                           rbf_width: float,
-                           rbf_amplitude: float):
+                           width_range: Tuple[float, float],
+                           amplitude_range: Tuple[float, float]):
         """
         Factory function used to create new RadialBasisFunctionNeuralNetwork
         instances with RBF's on a uniform grid with the given amplitude and width.
@@ -181,10 +181,13 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
         # The number of hidden cells, aka the number of rbf's, is now known.
         n_hidden = weights_c.shape[0]
 
+        weights_a = np.random.uniform(*amplitude_range, (n_hidden,))
+        weights_w = np.random.uniform(*width_range, (n_hidden, n_inputs))
+
         return cls(
-            weights_a=np.ones((n_hidden,)) * rbf_amplitude,
+            weights_a=weights_a,
             weights_c=weights_c,
-            weights_w=np.ones((n_hidden, n_inputs)) * rbf_width,
+            weights_w=weights_w,
             input_range=input_range,
             description="Radial basis function neural network with "
                         "the initial centers placed in a uniform grid."
@@ -366,7 +369,7 @@ class RadialBasisFunctionNeuralNetworkModel(BaseModel):
 
 
 
-        for i, grad in zip(trange(epochs - self.epochs, disable=not verbose), train_function(inputs, reference_outputs, **kwargs)):
+        for i, grad in zip(trange(epochs - self.epochs, disable=not verbose, leave=False), train_function(inputs, reference_outputs, **kwargs)):
             if self.epochs >= epochs:
                 print("Max number of epochs reached")
                 break
